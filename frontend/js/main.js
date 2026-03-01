@@ -15,7 +15,7 @@ import {
 } from './shaders.js';
 
 // ---- APP STATE ----
-const AppState = { ORBIT: 'ORBIT', CONFIG: 'CONFIG', ZOOMING: 'ZOOMING', SIMULATION: 'SIMULATION' };
+const AppState = { ORBIT: 'ORBIT', CONFIG: 'CONFIG', ZOOMING: 'ZOOMING', LANDING: 'LANDING', SIMULATION: 'SIMULATION', EXPLORE: 'EXPLORE' };
 let currentState = AppState.ORBIT;
 let selectedCrater = null;
 
@@ -32,30 +32,6 @@ const ROVER_PALETTE = [
     { id: 'epsilon', color: 0x06d6a0, name: 'ROVER-EPSILON', role: 'Excavator' },
 ];
 
-// ---- Swarm palette (15 rovers, no named identities) ----
-function hslToHex(h, s, l) {
-    s /= 100; l /= 100;
-    const a = s * Math.min(l, 1 - l);
-    const f = n => {
-        const k = (n + h / 30) % 12;
-        const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
-        return Math.round(255 * color);
-    };
-    return (f(0) << 16) + (f(8) << 8) + f(4);
-}
-
-const SWARM_COUNT = 15;
-const SWARM_PALETTE = [];
-for (let i = 0; i < SWARM_COUNT; i++) {
-    const hue = (i * 24) % 360;
-    SWARM_PALETTE.push({
-        id: `sw${String(i + 1).padStart(2, '0')}`,
-        color: hslToHex(hue, 70, 55),
-        name: `SW-${String(i + 1).padStart(2, '0')}`,
-        role: 'Swarm Unit',
-    });
-}
-
 // ---- Scene objects ----
 let scene, camera, renderer, controls;
 let moonGlobe, localTerrain, shadowMesh, dustParticles;
@@ -64,26 +40,37 @@ let craterMarkers = [];
 let roverMeshes = {}, roverTrails = {};
 const clock = new THREE.Clock();
 
+// ---- Loading scene ----
+let loadingSceneRef = null;
+let loadingGlitchInterval = null;
+let currentLoadingStage = 0;
+
+// ---- Landing sequence ----
+let landerGroup = null;
+let landerParticles = null;
+let landingTimeline = null;
+let landingDustPlume = null;
+
+// ---- Explore mode ----
+let exploreMode = false;
+let exploreRoverMesh = null;
+let exploreState = {
+    x: 0, z: 0, y: 0,
+    heading: 0,
+    speed: 0,
+    battery: 100,
+    maxSpeed: 5,
+    acceleration: 3,
+    turnRate: 1.5,
+    friction: 0.8,
+};
+
 // ---- Mission state ----
 let missionStartTime = null;
 let missionActive = false;
 let telemetryWs = null, negotiationWs = null;
 let roverStates = {};
 let shadowBoundaryX = -250;
-
-// ---- Swarm / Construction Mode ----
-let swarmMode = false;
-let constructionMode = false;
-let padTiles = [];
-let padTileMeshes = [];
-let padOutlineMesh = null;
-let padProgress = 0;
-let padPhase = 'survey';
-let padCenter = { x: 0, z: 0 };
-let padTargetRadius = 80;
-let collectionZones = [];
-let collectionZoneMeshes = [];
-let materialPileMeshes = [];
 
 // ---- Simulation speed ----
 let simSpeed = 1;
@@ -165,22 +152,6 @@ const SCENARIOS = {
         initialBattery: 60,
         modifiers: { raceMode: true },
     },
-    swarm_construction: {
-        name: 'Landing Pad Construction',
-        description: 'Deploy a 15-rover ISRU swarm to construct a sintered-regolith landing pad for future missions',
-        objectives: ['Survey and grade the construction site', 'Collect regolith feedstock from surrounding terrain', 'Sinter regolith tiles via concentrated solar / microwave at ~1100°C', 'Place interlocking hex tiles in concentric rings', 'Compact and verify pad surface integrity'],
-        shadowSpeed: 0.5,
-        initialBattery: 100,
-        modifiers: { swarmMode: true, constructionMode: true },
-    },
-    swarm_crater: {
-        name: 'Swarm Crater Mission',
-        description: 'Deploy a 15-rover swarm into the crater for complex multi-agent exploration and ice prospecting',
-        objectives: ['Maximize crater floor coverage with 15-rover coordination', 'Discover all ice deposits using distributed sensing', 'Maintain swarm communication mesh across entire crater'],
-        shadowSpeed: 4.0,
-        initialBattery: 90,
-        modifiers: { swarmMode: true },
-    },
 };
 
 // ---- AI Narrator (Web Speech API) ----
@@ -195,24 +166,106 @@ let totalAIDecisions = 0;
 let sidePanelOpen = true;
 
 // ---- Active rover IDs (dynamic) ----
-function activeRovers() { return isSwarmMode() ? SWARM_PALETTE : ROVER_PALETTE.slice(0, missionConfig.numRovers); }
+function activeRovers() { return ROVER_PALETTE.slice(0, missionConfig.numRovers); }
 
-function isSwarmMode() {
-    const sc = SCENARIOS[missionConfig.scenario];
-    return sc && sc.modifiers && sc.modifiers.swarmMode;
+// ============================================
+// LOADING PARTICLE SCENE
+// ============================================
+function initLoadingScene() {
+    const canvas = document.getElementById('loading-canvas');
+    if (!canvas) return;
+
+    const loadingRenderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false });
+    loadingRenderer.setSize(window.innerWidth, window.innerHeight);
+    loadingRenderer.setPixelRatio(1);
+
+    const loadingScene = new THREE.Scene();
+    const loadingCamera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    loadingCamera.position.set(0, 0, 8);
+
+    // Create particle sphere
+    const COUNT = 800;
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(COUNT * 3);
+    const col = new Float32Array(COUNT * 3);
+    const sizes = new Float32Array(COUNT);
+    for (let i = 0; i < COUNT; i++) {
+        const phi = Math.acos(2 * Math.random() - 1);
+        const theta = Math.random() * Math.PI * 2;
+        const r = 2.5 + (Math.random() - 0.5) * 0.3;
+        pos[i*3] = r * Math.sin(phi) * Math.cos(theta);
+        pos[i*3+1] = r * Math.cos(phi);
+        pos[i*3+2] = r * Math.sin(phi) * Math.sin(theta);
+        const temp = Math.random();
+        const b = 0.5 + Math.random() * 0.5;
+        col[i*3] = b * (temp < 0.5 ? 0.6 : 0.8);
+        col[i*3+1] = b * (temp < 0.5 ? 0.8 : 0.9);
+        col[i*3+2] = b;
+        sizes[i] = 1.5 + Math.random() * 2.5;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    const points = new THREE.Points(geo, new THREE.PointsMaterial({
+        size: 2, vertexColors: true, transparent: true, opacity: 0.7, sizeAttenuation: true
+    }));
+    loadingScene.add(points);
+
+    // Second shell for depth
+    const geo2 = new THREE.BufferGeometry();
+    const pos2 = new Float32Array(200 * 3);
+    for (let i = 0; i < 200; i++) {
+        const phi = Math.acos(2 * Math.random() - 1);
+        const theta = Math.random() * Math.PI * 2;
+        const r = 3.5 + Math.random() * 1.5;
+        pos2[i*3] = r * Math.sin(phi) * Math.cos(theta);
+        pos2[i*3+1] = r * Math.cos(phi);
+        pos2[i*3+2] = r * Math.sin(phi) * Math.sin(theta);
+    }
+    geo2.setAttribute('position', new THREE.BufferAttribute(pos2, 3));
+    const shell2 = new THREE.Points(geo2, new THREE.PointsMaterial({
+        size: 1, color: 0x4a9eff, transparent: true, opacity: 0.2, sizeAttenuation: true
+    }));
+    loadingScene.add(shell2);
+
+    let frameId;
+    function loadingAnimate() {
+        frameId = requestAnimationFrame(loadingAnimate);
+        points.rotation.y += 0.003;
+        points.rotation.x += 0.001;
+        shell2.rotation.y -= 0.002;
+        loadingRenderer.render(loadingScene, loadingCamera);
+    }
+    loadingAnimate();
+
+    loadingSceneRef = { renderer: loadingRenderer, frameId, scene: loadingScene };
+
+    // Glitch effect interval
+    loadingGlitchInterval = setInterval(() => {
+        const content = document.getElementById('loading-content');
+        if (content) {
+            content.classList.add('loading-glitch');
+            setTimeout(() => content.classList.remove('loading-glitch'), 150);
+        }
+    }, 2500 + Math.random() * 2000);
 }
-function isConstructionMode() {
-    const sc = SCENARIOS[missionConfig.scenario];
-    return sc && sc.modifiers && sc.modifiers.constructionMode;
-}
-function activeSwarmRovers() {
-    return isSwarmMode() ? SWARM_PALETTE : ROVER_PALETTE.slice(0, missionConfig.numRovers);
+
+function cleanupLoadingScene() {
+    if (loadingSceneRef) {
+        cancelAnimationFrame(loadingSceneRef.frameId);
+        loadingSceneRef.renderer.dispose();
+        loadingSceneRef = null;
+    }
+    if (loadingGlitchInterval) {
+        clearInterval(loadingGlitchInterval);
+        loadingGlitchInterval = null;
+    }
 }
 
 // ============================================
 // INIT
 // ============================================
 function init() {
+    initLoadingScene();
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000005);
 
@@ -344,21 +397,54 @@ function loadNASAMoon() {
                 }
             });
             scene.add(moonGlobe);
-            if (loadingEl) loadingEl.style.display = 'none';
-            // Show interactive onboarding instead of just orbit instruction
-            showOnboarding();
+            cleanupLoadingScene();
+            if (typeof gsap !== 'undefined' && loadingEl) {
+                const tl = gsap.timeline({
+                    onComplete: () => {
+                        loadingEl.style.display = 'none';
+                        const orbitInst = document.getElementById('orbit-instruction');
+                        orbitInst.style.display = 'block';
+                        orbitInst.style.opacity = '0';
+                        gsap.to(orbitInst, { opacity: 1, y: 0, duration: 0.8, ease: 'power2.out' });
+                    }
+                });
+                tl.to('#loading-content', { opacity: 0, scale: 0.95, duration: 0.6, ease: 'power2.in' })
+                  .to('#loading-canvas', { opacity: 0, duration: 0.5, ease: 'power2.in' }, '-=0.3')
+                  .to('#loading-indicator', { opacity: 0, duration: 0.4 });
+            } else {
+                if (loadingEl) loadingEl.style.display = 'none';
+                document.getElementById('orbit-instruction').style.display = 'block';
+            }
             addCraterMarkers();
             console.log('NASA Moon + crater markers loaded');
         },
         (progress) => {
             const pct = progress.total ? Math.round(progress.loaded / progress.total * 100) : 0;
             const bar = document.getElementById('loading-bar-fill');
-            const text = document.getElementById('loading-text');
+            const pctEl = document.getElementById('loading-pct');
             if (bar) bar.style.width = pct + '%';
-            if (text) text.textContent = 'INITIALIZING LUNAR RECONNAISSANCE... ' + pct + '%';
+            if (pctEl) pctEl.textContent = pct + '%';
+
+            // Multi-stage loading messages
+            let targetStage = 0;
+            if (pct >= 85) targetStage = 4;
+            else if (pct >= 65) targetStage = 3;
+            else if (pct >= 40) targetStage = 2;
+            else if (pct >= 15) targetStage = 1;
+
+            if (targetStage !== currentLoadingStage) {
+                const stages = document.querySelectorAll('.loading-stage');
+                if (stages.length > 0) {
+                    stages[currentLoadingStage]?.classList.remove('active');
+                    stages[currentLoadingStage]?.classList.add('done');
+                    stages[targetStage]?.classList.add('active');
+                    currentLoadingStage = targetStage;
+                }
+            }
         },
         (error) => {
             console.warn('Moon GLB failed:', error);
+            cleanupLoadingScene();
             if (loadingEl) loadingEl.style.display = 'none';
             document.getElementById('orbit-instruction').style.display = 'block';
             const geo = new THREE.SphereGeometry(MOON_RADIUS, 128, 128);
@@ -593,7 +679,11 @@ function selectCrater(crater) {
         featList.appendChild(li);
     });
 
-    document.getElementById('config-panel').classList.add('visible');
+    const panel = document.getElementById('config-panel');
+    panel.classList.add('visible');
+    if (typeof gsap !== 'undefined') {
+        gsap.fromTo(panel, { x: 500, opacity: 0 }, { x: 0, opacity: 1, duration: 0.5, ease: 'power3.out' });
+    }
     document.getElementById('orbit-instruction').style.display = 'none';
     currentState = AppState.CONFIG;
 
@@ -624,24 +714,15 @@ window.updateConfig = function(param, value) {
     missionConfig[param] = parseFloat(value);
     const display = document.getElementById('config-val-' + param);
     if (display) display.textContent = value;
-    // When scenario changes, disable rover slider for swarm modes
-    if (param === 'scenario') {
-        missionConfig.scenario = value;
-        const sc = SCENARIOS[value];
-        const roverSlider = document.getElementById('slider-numRovers');
-        const roverLabel = document.getElementById('config-val-numRovers');
-        if (sc && sc.modifiers && sc.modifiers.swarmMode) {
-            if (roverSlider) { roverSlider.disabled = true; roverSlider.value = 15; }
-            if (roverLabel) roverLabel.textContent = '15 (SWARM)';
-        } else {
-            if (roverSlider) roverSlider.disabled = false;
-            if (roverLabel) roverLabel.textContent = roverSlider ? roverSlider.value : '3';
-        }
-    }
 };
 
 window.cancelConfig = function() {
-    document.getElementById('config-panel').classList.remove('visible');
+    const panel = document.getElementById('config-panel');
+    if (typeof gsap !== 'undefined') {
+        gsap.to(panel, { x: 500, opacity: 0, duration: 0.35, ease: 'power2.in', onComplete: () => panel.classList.remove('visible') });
+    } else {
+        panel.classList.remove('visible');
+    }
     currentState = AppState.ORBIT;
     document.getElementById('orbit-instruction').style.display = 'block';
     animateCameraTo(0, -1400, 1200, 0, -MOON_RADIUS * 0.85, 0, 1.0);
@@ -657,13 +738,6 @@ window.launchMission = function() {
     // Scenario selection
     const scenSelect = document.getElementById('select-scenario');
     if (scenSelect) missionConfig.scenario = scenSelect.value;
-    // Swarm mode overrides
-    const isSwarm = isSwarmMode();
-    swarmMode = isSwarm;
-    constructionMode = isConstructionMode();
-    if (isSwarm) {
-        missionConfig.numRovers = SWARM_COUNT;
-    }
     startZoomTransition();
 };
 
@@ -719,7 +793,7 @@ function updateZoom(time) {
             if (c.isMesh) { c.material.opacity = 1 - fade; c.material.transparent = true; }
         });
     }
-    if (t >= 1.0) transitionToSimulation();
+    if (t >= 1.0) startLandingSequence();
 }
 
 // ============================================
@@ -731,43 +805,43 @@ function transitionToSimulation() {
 
     const craterRadius = selectedCrater.diameter_km * CRATER_SCALE;
     const craterDepth = selectedCrater.depth_km * DEPTH_SCALE;
-    const effectiveDepth = constructionMode ? 5 : craterDepth;
 
-    createLocalTerrain(craterRadius, effectiveDepth);
+    createLocalTerrain(craterRadius, craterDepth);
     createShadowOverlay(craterRadius);
-    createDustParticles(craterRadius, effectiveDepth);
+    createDustParticles(craterRadius, craterDepth);
 
     camera.position.set(0, craterRadius * 0.5, craterRadius * 0.7);
-    camera.lookAt(0, -effectiveDepth * 0.3, 0);
-    controls.target.set(0, -effectiveDepth * 0.3, 0);
+    camera.lookAt(0, -craterDepth * 0.3, 0);
+    controls.target.set(0, -craterDepth * 0.3, 0);
     controls.enabled = true;
     controls.minDistance = 20;
     controls.maxDistance = craterRadius * 2;
 
     initRoverStates(craterRadius);
-    createRovers(craterRadius, effectiveDepth);
+    createRovers(craterRadius, craterDepth);
 
     // Frontier technique overlays
-    if (!constructionMode) {
-        generateIceDeposits(craterRadius, effectiveDepth);
-        createIceMarkers(craterRadius, effectiveDepth);
-    }
+    generateIceDeposits(craterRadius, craterDepth);
+    createIceMarkers(craterRadius, craterDepth);
     createCommsMesh();
     createVoronoiOverlay(craterRadius);
-    if (constructionMode) {
-        initLandingPadConstruction(craterRadius, effectiveDepth);
-    }
 
     document.getElementById('rover-strip').style.display = '';
     document.getElementById('side-panel').style.display = '';
     document.getElementById('bottom-bar').style.display = '';
     document.getElementById('sim-controls').style.display = 'flex';
     document.getElementById('minimap-container').style.display = 'block';
-    if (document.getElementById('nvidia-panel')) document.getElementById('nvidia-panel').style.display = '';
+    // GSAP staggered entrance
+    if (typeof gsap !== 'undefined') {
+        gsap.from('#sim-controls', { y: -50, opacity: 0, duration: 0.5, ease: 'power2.out' });
+        gsap.from('#rover-strip', { y: 50, opacity: 0, duration: 0.5, delay: 0.1, ease: 'power2.out' });
+        gsap.from('#side-panel', { x: -50, opacity: 0, duration: 0.5, delay: 0.15, ease: 'power2.out' });
+        gsap.from('#bottom-bar', { y: 50, opacity: 0, duration: 0.4, delay: 0.2, ease: 'power2.out' });
+        gsap.from('#minimap-container', { scale: 0.7, opacity: 0, duration: 0.4, delay: 0.25, ease: 'back.out(1.4)' });
+    }
     initHUD();
     initViewTabs();
     initMinimap();
-    initMissionGoals();
 
     // Show scenario badge
     const scenBadge = document.getElementById('mission-scenario-badge');
@@ -794,6 +868,11 @@ function transitionToSimulation() {
 
     // Apply scenario after a short delay so rovers are initialized
     setTimeout(() => applyScenario(), 500);
+
+    // Auto-launch tour on first ever mission
+    if (!localStorage.getItem('regolith_tour_done')) {
+        setTimeout(() => startTour(), 1500);
+    }
 }
 
 // ============================================
@@ -801,6 +880,8 @@ function transitionToSimulation() {
 // ============================================
 window.backToMap = function() {
     missionActive = false;
+    if (exploreMode) window.toggleExploreMode();
+    if (exploreRoverMesh) { scene.remove(exploreRoverMesh); exploreRoverMesh = null; }
     if (telemetryWs) try { telemetryWs.close(); } catch(e) {}
     if (negotiationWs) try { negotiationWs.close(); } catch(e) {}
     telemetryWs = null; negotiationWs = null;
@@ -816,23 +897,6 @@ window.backToMap = function() {
         if (dep._ring) scene.remove(dep._ring);
     }
     iceDeposits = [];
-    // Clean up construction objects
-    for (const mesh of padTileMeshes) scene.remove(mesh);
-    padTileMeshes = [];
-    padTiles = [];
-    if (padOutlineMesh) { scene.remove(padOutlineMesh); padOutlineMesh = null; }
-    if (padGlowRing) { scene.remove(padGlowRing); padGlowRing = null; }
-    if (padHexMeshGroup) { scene.remove(padHexMeshGroup); padHexMeshGroup = null; }
-    for (const mesh of collectionZoneMeshes) scene.remove(mesh);
-    collectionZoneMeshes = [];
-    collectionZones = [];
-    padProgress = 0;
-    padPhase = 'survey';
-    padPhaseIndex = 0;
-    padPhaseTime = 0;
-    padTotalTime = 0;
-    swarmMode = false;
-    constructionMode = false;
     for (const id of Object.keys(roverMeshes)) {
         scene.remove(roverMeshes[id]);
         if (roverTrails[id]) scene.remove(roverTrails[id].line);
@@ -867,8 +931,6 @@ window.backToMap = function() {
     document.getElementById('minimap-container').style.display = 'none';
     if (document.getElementById('pov-hud')) document.getElementById('pov-hud').style.display = 'none';
     if (document.getElementById('post-mission')) document.getElementById('post-mission').style.display = 'none';
-    if (document.getElementById('mission-goals')) document.getElementById('mission-goals').style.display = 'none';
-    if (document.getElementById('nvidia-panel')) document.getElementById('nvidia-panel').style.display = 'none';
     const scenBadge = document.getElementById('mission-scenario-badge');
     if (scenBadge) scenBadge.style.display = 'none';
     povRoverId = null;
@@ -1138,14 +1200,10 @@ function createRoverMesh(color, name) {
     dangerRing.position.y = 0.5; group.add(dangerRing);
     group.userData.dangerRing = dangerRing;
 
-    if (!swarmMode) {
-        const label = createTextSprite(name, color);
-        label.position.set(0, 48, 0);
-        label.scale.set(240, 60, 1);
-        group.add(label);
-    }
-
-    if (swarmMode) return group;
+    const label = createTextSprite(name, color);
+    label.position.set(0, 48, 0);
+    label.scale.set(240, 60, 1); // Counterscale group.scale for readable labels
+    group.add(label);
 
     // Vertical beacon for long-range visibility
     const beaconGeo = new THREE.BufferGeometry().setFromPoints([
@@ -1173,7 +1231,7 @@ function createRovers(craterRadius, craterDepth) {
     roverTrails = {};
     for (const r of rovers) {
         const group = createRoverMesh(r.color, r.name);
-        group.scale.setScalar(swarmMode ? ROVER_MESH_SCALE * 0.7 : ROVER_MESH_SCALE);
+        group.scale.setScalar(ROVER_MESH_SCALE);
         const state = roverStates[r.id];
         group.position.set(state.x, craterHeight(state.x, state.z) + 2, state.z);
         scene.add(group);
@@ -1257,7 +1315,7 @@ function createIceMarkers(craterRadius, craterDepth) {
 
 function createCommsMesh() {
     // Communication links between rovers (drawn as glowing lines)
-    const maxLinks = swarmMode ? 120 : 15; // max rover pairs (15 choose 2 = 105)
+    const maxLinks = 15; // max rover pairs
     const geo = new THREE.BufferGeometry();
     const positions = new Float32Array(maxLinks * 2 * 3); // 2 vertices per line
     const colors = new Float32Array(maxLinks * 2 * 3);
@@ -1274,7 +1332,7 @@ function createCommsMesh() {
 function createVoronoiOverlay(craterRadius) {
     // Voronoi boundary lines showing area partitioning
     const geo = new THREE.BufferGeometry();
-    const positions = new Float32Array((swarmMode ? 6000 : 2000) * 3);
+    const positions = new Float32Array(2000 * 3); // up to 2000 vertices
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.setDrawRange(0, 0);
     voronoiLines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
@@ -1606,7 +1664,7 @@ function updateVoronoiOverlay(craterRadius) {
                         const d = (s.x - nx) ** 2 + (s.z - nz) ** 2;
                         if (d < nClosestDist) { nClosestDist = d; nClosest = id; }
                     }
-                    if (closest !== nClosest && vertexIndex < (swarmMode ? 5998 : 1998)) {
+                    if (closest !== nClosest && vertexIndex < 1998) {
                         const midX = (px + nx) / 2;
                         const y = craterHeight(midX, pz) + 2;
                         const idx = vertexIndex * 3;
@@ -1628,7 +1686,7 @@ function updateVoronoiOverlay(craterRadius) {
                         const d = (s.x - nx) ** 2 + (s.z - nz) ** 2;
                         if (d < nClosestDist) { nClosestDist = d; nClosest = id; }
                     }
-                    if (closest !== nClosest && vertexIndex < (swarmMode ? 5998 : 1998)) {
+                    if (closest !== nClosest && vertexIndex < 1998) {
                         const midZ = (pz + nz) / 2;
                         const y = craterHeight(px, midZ) + 2;
                         const idx = vertexIndex * 3;
@@ -1652,356 +1710,6 @@ function updateIceDeposits(time) {
             dep._marker.position.y += Math.sin(time * 2 + dep.x) * 0.01;
         }
     }
-}
-
-// ============================================
-// LANDING PAD CONSTRUCTION (ISRU Sintered Regolith)
-// Phases: SURVEY → GRADE → COLLECT → SINTER → PLACE → VERIFY
-// Based on NASA ISRU capability roadmap — microwave sintering
-// of regolith at ~1100°C to form interlocking hex ceramic tiles.
-// ============================================
-const PAD_PHASES = ['SURVEY', 'GRADE', 'COLLECT', 'SINTER', 'PLACE', 'VERIFY'];
-const PAD_PHASE_DURATION = [12, 18, 30, 40, 35, 10]; // seconds at 1× speed
-let padTotalTime = 0;
-let padPhaseIndex = 0;
-let padPhaseTime = 0;
-let padHexMeshGroup = null;
-let padOutlineCircle = null;
-let padGlowRing = null;
-let sinterBeamMeshes = [];
-let collectionMarkerMeshes = [];
-
-function initLandingPadConstruction(craterRadius, craterDepth) {
-    padPhaseIndex = 0;
-    padPhaseTime = 0;
-    padTotalTime = 0;
-    padProgress = 0;
-    padPhase = PAD_PHASES[0];
-    padCenter = { x: 0, z: 0 };
-
-    // Landing pad outline circle on terrain
-    const outlineGeo = new THREE.RingGeometry(padTargetRadius - 1, padTargetRadius + 1, 64);
-    outlineGeo.rotateX(-Math.PI / 2);
-    const outlineMat = new THREE.MeshBasicMaterial({
-        color: 0x4a9eff, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false
-    });
-    padOutlineMesh = new THREE.Mesh(outlineGeo, outlineMat);
-    padOutlineMesh.position.set(padCenter.x, craterHeight(padCenter.x, padCenter.z) + 0.5, padCenter.z);
-    padOutlineMesh.renderOrder = 3;
-    scene.add(padOutlineMesh);
-
-    // Pulsing glow ring
-    const glowGeo = new THREE.RingGeometry(padTargetRadius + 2, padTargetRadius + 6, 64);
-    glowGeo.rotateX(-Math.PI / 2);
-    const glowMat = new THREE.MeshBasicMaterial({
-        color: 0x4a9eff, transparent: true, opacity: 0.15, side: THREE.DoubleSide, depthWrite: false
-    });
-    padGlowRing = new THREE.Mesh(glowGeo, glowMat);
-    padGlowRing.position.copy(padOutlineMesh.position);
-    padGlowRing.renderOrder = 2;
-    scene.add(padGlowRing);
-
-    // Generate hex tile layout (concentric rings)
-    padHexMeshGroup = new THREE.Group();
-    padHexMeshGroup.position.set(padCenter.x, craterHeight(padCenter.x, padCenter.z) + 0.3, padCenter.z);
-    const hexSize = 6;
-    const hexH = hexSize * Math.sqrt(3);
-    padTiles = [];
-    // Center tile
-    padTiles.push({ q: 0, r: 0, x: 0, z: 0, placed: false, sintered: false });
-    // Concentric hex rings
-    for (let ring = 1; ring <= 7; ring++) {
-        let hx = ring, hz = 0;
-        const dirs = [[0,1],[-1,1],[-1,0],[0,-1],[1,-1],[1,0]];
-        for (let d = 0; d < 6; d++) {
-            for (let s = 0; s < ring; s++) {
-                const cx = hx * hexSize * 1.5;
-                const cz = (hx * 0.5 + hz) * hexH;
-                const dist = Math.sqrt(cx * cx + cz * cz);
-                if (dist < padTargetRadius - hexSize) {
-                    padTiles.push({ q: hx, r: hz, x: cx, z: cz, placed: false, sintered: false });
-                }
-                hx += dirs[d][0];
-                hz += dirs[d][1];
-            }
-        }
-    }
-
-    // Create hex tile meshes (invisible initially)
-    const hexShape = new THREE.Shape();
-    for (let i = 0; i < 6; i++) {
-        const angle = (Math.PI / 3) * i - Math.PI / 6;
-        const px = Math.cos(angle) * (hexSize * 0.92);
-        const pz = Math.sin(angle) * (hexSize * 0.92);
-        if (i === 0) hexShape.moveTo(px, pz);
-        else hexShape.lineTo(px, pz);
-    }
-    hexShape.closePath();
-    const hexExtrudeGeo = new THREE.ExtrudeGeometry(hexShape, { depth: 0.8, bevelEnabled: false });
-    hexExtrudeGeo.rotateX(-Math.PI / 2);
-
-    padTileMeshes = [];
-    for (const tile of padTiles) {
-        const mat = new THREE.MeshStandardMaterial({
-            color: 0x8a7a6a, emissive: 0x221100, emissiveIntensity: 0,
-            roughness: 0.7, metalness: 0.3, transparent: true, opacity: 0
-        });
-        const mesh = new THREE.Mesh(hexExtrudeGeo, mat);
-        mesh.position.set(tile.x, 0, tile.z);
-        mesh.userData.tile = tile;
-        padHexMeshGroup.add(mesh);
-        padTileMeshes.push(mesh);
-    }
-    scene.add(padHexMeshGroup);
-
-    // Collection zones (4 zones around pad perimeter)
-    collectionZones = [];
-    collectionZoneMeshes = [];
-    for (let i = 0; i < 4; i++) {
-        const angle = (Math.PI / 2) * i + Math.PI / 4;
-        const cx = Math.cos(angle) * (padTargetRadius + 30);
-        const cz = Math.sin(angle) * (padTargetRadius + 30);
-        collectionZones.push({ x: cx, z: cz, collected: 0, capacity: 25 });
-        // visual marker
-        const ringGeo = new THREE.RingGeometry(8, 12, 6);
-        ringGeo.rotateX(-Math.PI / 2);
-        const ringMat = new THREE.MeshBasicMaterial({
-            color: 0xf0ad4e, transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false
-        });
-        const ringMesh = new THREE.Mesh(ringGeo, ringMat);
-        ringMesh.position.set(cx, craterHeight(cx, cz) + 0.5, cz);
-        ringMesh.renderOrder = 3;
-        scene.add(ringMesh);
-        collectionZoneMeshes.push(ringMesh);
-    }
-
-    addLogEntry('system', `<b>LANDING PAD CONSTRUCTION</b> initiated. Target radius: ${padTargetRadius}m. ${padTiles.length} hex tiles planned.`);
-    addLogEntry('system', `<b>Phase 1: SURVEY</b> — Rovers scanning construction site topography.`);
-    if (narratorEnabled) narrate('Landing pad construction has begun. Fifteen rovers will survey, grade, collect regolith, sinter tiles, and assemble the pad.');
-}
-
-function tickConstructionSim(dt) {
-    const craterRadius = selectedCrater ? selectedCrater.diameter_km * CRATER_SCALE : 750;
-    const speed = 3.5 * simSpeed;
-    const drainRate = 0.03 * simSpeed;
-    const time = clock.getElapsedTime();
-    const scaledDt = dt * simSpeed;
-
-    // Advance shadow (slower in construction mode)
-    shadowBoundaryX += missionConfig.shadowSpeed * dt * simSpeed * 0.15;
-    updateShadow(shadowBoundaryX);
-
-    // Tag each state with its ID
-    for (const [id, state] of Object.entries(roverStates)) { state._id = id; }
-
-    // Advance construction phase timing
-    padPhaseTime += scaledDt;
-    padTotalTime += scaledDt;
-    const totalPhaseTime = PAD_PHASE_DURATION.reduce((a,b) => a+b, 0);
-    padProgress = Math.min(100, (padTotalTime / totalPhaseTime) * 100);
-
-    // Check phase transitions
-    if (padPhaseIndex < PAD_PHASES.length - 1 && padPhaseTime >= PAD_PHASE_DURATION[padPhaseIndex]) {
-        padPhaseTime = 0;
-        padPhaseIndex++;
-        padPhase = PAD_PHASES[padPhaseIndex];
-        addLogEntry('system', `<b>Phase ${padPhaseIndex + 1}: ${padPhase}</b> — ${getPhaseDescription(padPhaseIndex)}`);
-        if (narratorEnabled) narrate(`Construction phase: ${padPhase}. ${getPhaseDescription(padPhaseIndex)}`);
-    }
-
-    // Update swarm HUD elements
-    const el = id => document.getElementById(id);
-    if (el('swarm-pad-progress')) el('swarm-pad-progress').textContent = padProgress.toFixed(0) + '%';
-    if (el('swarm-phase')) el('swarm-phase').textContent = padPhase;
-
-    // Determine tiles to reveal based on progress
-    const tilesTarget = Math.floor((padProgress / 100) * padTiles.length);
-
-    // Animate tile placement
-    for (let i = 0; i < padTiles.length; i++) {
-        const tile = padTiles[i];
-        const mesh = padTileMeshes[i];
-        if (!mesh) continue;
-
-        if (i < tilesTarget && !tile.placed) {
-            tile.placed = true;
-            tile._animStart = time + (i % 8) * 0.08;
-            tile._animBaseY = mesh.position.y;
-        }
-        // Animate tile appearing (no gsap dependency)
-        if (tile.placed && tile._animStart !== undefined) {
-            const elapsed = time - tile._animStart;
-            if (elapsed >= 0) {
-                // Fade in opacity over 0.6s
-                mesh.material.opacity = Math.min(0.9, elapsed / 0.6 * 0.9);
-                // Drop from +3 above with bounce easing over 0.5s
-                if (elapsed < 0.5) {
-                    const t = elapsed / 0.5;
-                    // Simple bounce approximation
-                    const bounce = t < 0.6 ? (t / 0.6) * (t / 0.6) : t < 0.8 ? 1 - (1 - t) * 4 * 0.3 + 0.7 : 1 - (1 - t) * 2 * 0.1 + 0.9;
-                    const eased = Math.min(1, Math.max(0, bounce));
-                    mesh.position.y = tile._animBaseY + 3 * (1 - eased);
-                } else {
-                    mesh.position.y = tile._animBaseY;
-                    delete tile._animStart; // animation done
-                }
-            }
-        }
-
-        if (tile.placed && padPhaseIndex >= 3) { // SINTER phase
-            // Glow effect during sintering
-            const sinterProgress = Math.min(1, (padPhaseIndex - 3 + padPhaseTime / PAD_PHASE_DURATION[3]) / 2);
-            mesh.material.emissiveIntensity = padPhaseIndex === 3 ?
-                0.5 + Math.sin(time * 4 + i * 0.3) * 0.3 : sinterProgress * 0.1;
-            mesh.material.color.setHex(padPhaseIndex >= 4 ? 0xa09080 : 0x8a7a6a);
-            tile.sintered = padPhaseIndex >= 4;
-        }
-    }
-
-    // Outline pulse
-    if (padOutlineMesh) {
-        padOutlineMesh.material.opacity = 0.3 + Math.sin(time * 2) * 0.2;
-        const phaseColors = [0x4a9eff, 0x4a9eff, 0xf0ad4e, 0xff6b35, 0x00d47e, 0x76b900];
-        padOutlineMesh.material.color.setHex(phaseColors[padPhaseIndex] || 0x4a9eff);
-    }
-    if (padGlowRing) {
-        padGlowRing.material.opacity = 0.08 + Math.sin(time * 1.5) * 0.06;
-        padGlowRing.scale.setScalar(1 + Math.sin(time * 1.2) * 0.03);
-    }
-
-    // Collection zone pulse in COLLECT phase
-    if (padPhaseIndex === 2) {
-        collectionZoneMeshes.forEach((m, i) => {
-            m.material.opacity = 0.3 + Math.sin(time * 3 + i) * 0.2;
-            collectionZones[i].collected = Math.min(collectionZones[i].capacity,
-                collectionZones[i].collected + scaledDt * 0.8);
-        });
-    }
-
-    // Rover movement — role-based behavior per phase
-    for (const [id, state] of Object.entries(roverStates)) {
-        state.in_shadow = state.x < shadowBoundaryX;
-        const drain = drainRate * (state.in_shadow ? 4 : 1) * dt;
-        state.battery = Math.max(0, state.battery - drain);
-
-        // Phase-based tasking for construction
-        if (time > state._retargetTime) {
-            state._retargetTime = time + 2 + Math.random() * 3;
-            assignConstructionTask(state, id, craterRadius, time);
-        }
-
-        // Movement using potential fields
-        const pf = computePotentialField(state, roverStates, craterRadius, time);
-        const dx = state._tx - state.x;
-        const dz = state._tz - state.z;
-        const dist = Math.sqrt(dx * dx + dz * dz);
-
-        if (dist > 2 && state.battery > 0) {
-            const maxV = speed * (state.battery / 100);
-            const goalW = 0.65, pfW = 0.35;
-            const dirX = goalW * (dx / dist) + pfW * pf.fx;
-            const dirZ = goalW * (dz / dist) + pfW * pf.fz;
-            const mag = Math.sqrt(dirX * dirX + dirZ * dirZ) || 1;
-            state.vx = (dirX / mag) * maxV;
-            state.vz = (dirZ / mag) * maxV;
-            state.x += state.vx * dt;
-            state.z += state.vz * dt;
-        } else {
-            state.vx *= 0.9;
-            state.vz *= 0.9;
-        }
-
-        // Clamp to crater
-        const r = Math.sqrt(state.x * state.x + state.z * state.z);
-        if (r > craterRadius * 0.95) {
-            state.x *= (craterRadius * 0.9) / r;
-            state.z *= (craterRadius * 0.9) / r;
-        }
-    }
-
-    updateCommsMesh(craterRadius);
-    updateVoronoiOverlay(craterRadius);
-
-    // Construction completion check
-    if (padProgress >= 100 && padPhase !== 'COMPLETE') {
-        padPhase = 'COMPLETE';
-        addLogEntry('award', `<b>LANDING PAD COMPLETE!</b> ${padTiles.length} sintered regolith hex tiles placed and verified. Pad integrity: 100%.`);
-        if (narratorEnabled) narrate('Landing pad construction complete! All hexagonal regolith tiles have been sintered and verified. The pad is ready for future landings.');
-        if (padOutlineMesh) padOutlineMesh.material.color.setHex(0x76b900);
-    }
-}
-
-function assignConstructionTask(state, id, craterRadius, time) {
-    const roverIdx = Object.keys(roverStates).indexOf(id);
-    const phase = padPhaseIndex;
-
-    if (state.in_shadow || state.battery < 20) {
-        state._tx = craterRadius * 0.4 + Math.random() * 20;
-        state._tz = (Math.random() - 0.5) * craterRadius * 0.3;
-        state.task = state.in_shadow ? 'EVADING SHADOW' : 'LOW BATTERY — RTB';
-        return;
-    }
-
-    switch(phase) {
-        case 0: // SURVEY
-            // Rovers spiral outward scanning terrain
-            const surveyAngle = (roverIdx / 15) * Math.PI * 2 + time * 0.1;
-            const surveyR = padTargetRadius * (0.3 + (time % 20) / 20 * 0.7);
-            state._tx = padCenter.x + Math.cos(surveyAngle) * surveyR;
-            state._tz = padCenter.z + Math.sin(surveyAngle) * surveyR;
-            state.task = 'TOPO SURVEY — LIDAR';
-            break;
-        case 1: // GRADE
-            // Rovers converge on pad area, grading surface
-            const gradeAngle = (roverIdx / 15) * Math.PI * 2;
-            const gradeR = padTargetRadius * 0.5 + Math.random() * padTargetRadius * 0.4;
-            state._tx = padCenter.x + Math.cos(gradeAngle) * gradeR;
-            state._tz = padCenter.z + Math.sin(gradeAngle) * gradeR;
-            state.task = 'GRADING SURFACE';
-            break;
-        case 2: // COLLECT
-            // Rovers shuttle between collection zones and pile points
-            const zone = collectionZones[roverIdx % collectionZones.length];
-            state._tx = zone.x + (Math.random() - 0.5) * 15;
-            state._tz = zone.z + (Math.random() - 0.5) * 15;
-            state.task = 'COLLECTING FEEDSTOCK';
-            break;
-        case 3: // SINTER
-            // Rovers orbit pad perimeter, directing solar/microwave energy
-            const sinterAngle = (roverIdx / 15) * Math.PI * 2 + time * 0.15;
-            const sinterR = padTargetRadius * 0.7;
-            state._tx = padCenter.x + Math.cos(sinterAngle) * sinterR;
-            state._tz = padCenter.z + Math.sin(sinterAngle) * sinterR;
-            state.task = 'SINTERING — 1100°C';
-            break;
-        case 4: // PLACE
-            // Rovers pick up and place tiles from center outward
-            const placeAngle = (roverIdx / 15) * Math.PI * 2 + time * 0.05;
-            const placeR = padTargetRadius * (0.2 + padPhaseTime / PAD_PHASE_DURATION[4] * 0.6);
-            state._tx = padCenter.x + Math.cos(placeAngle) * placeR;
-            state._tz = padCenter.z + Math.sin(placeAngle) * placeR;
-            state.task = 'PLACING HEX TILE';
-            break;
-        case 5: // VERIFY
-            // Rovers scan completed pad
-            const verifyAngle = (roverIdx / 15) * Math.PI * 2 + time * 0.2;
-            state._tx = padCenter.x + Math.cos(verifyAngle) * padTargetRadius * 0.6;
-            state._tz = padCenter.z + Math.sin(verifyAngle) * padTargetRadius * 0.6;
-            state.task = 'INTEGRITY VERIFY';
-            break;
-    }
-}
-
-function getPhaseDescription(phaseIndex) {
-    const descs = [
-        'Rovers scanning construction site with LIDAR for topographic survey.',
-        'Surface grading to create level foundation — removing loose regolith.',
-        'Collecting regolith feedstock from surrounding terrain for sintering.',
-        'Microwave sintering regolith at ~1100°C to form ceramic hex tiles.',
-        'Placing interlocking hex tiles in concentric rings from center outward.',
-        'Verifying pad surface integrity and structural compaction.'
-    ];
-    return descs[phaseIndex] || '';
 }
 
 function updateRovers(time) {
@@ -2045,65 +1753,39 @@ function updateRovers(time) {
 function initHUD() {
     const container = document.getElementById('rover-cards');
     container.innerHTML = '';
-
-    if (swarmMode) {
-        // Swarm aggregate HUD — no individual rover cards
-        container.innerHTML =
-            '<div class="swarm-hud">' +
-                '<div class="swarm-header">' +
-                    '<span class="swarm-icon">&#9670;</span>' +
-                    '<span class="swarm-title">SWARM — ' + SWARM_COUNT + ' UNITS</span>' +
-                    '<span class="swarm-mode-badge">' + (constructionMode ? 'CONSTRUCTION' : 'EXPLORATION') + '</span>' +
+    const rovers = activeRovers();
+    for (const r of rovers) {
+        const state = roverStates[r.id];
+        if (!state) continue;
+        const hexColor = '#' + r.color.toString(16).padStart(6, '0');
+        const card = document.createElement('div');
+        card.className = 'rover-pill';
+        card.id = 'rover-card-' + r.id;
+        card.style.borderTopColor = hexColor;
+        card.innerHTML =
+            '<div class="rp-header">' +
+                '<div class="rp-name-group">' +
+                    '<span class="rp-dot" style="background:' + hexColor + '"></span>' +
+                    '<span class="rp-name" style="color:' + hexColor + '">' + r.name + '</span>' +
                 '</div>' +
-                '<div class="swarm-stats-row">' +
-                    '<div class="swarm-stat"><span class="swarm-stat-val" id="swarm-active">' + SWARM_COUNT + '</span><span class="swarm-stat-lbl">ACTIVE</span></div>' +
-                    '<div class="swarm-stat"><span class="swarm-stat-val" id="swarm-avg-bat">100%</span><span class="swarm-stat-lbl">AVG BAT</span></div>' +
-                    '<div class="swarm-stat"><span class="swarm-stat-val" id="swarm-min-bat">100%</span><span class="swarm-stat-lbl">MIN BAT</span></div>' +
-                    '<div class="swarm-stat"><span class="swarm-stat-val" id="swarm-coverage">0%</span><span class="swarm-stat-lbl">COVERAGE</span></div>' +
-                    (constructionMode ?
-                        '<div class="swarm-stat"><span class="swarm-stat-val" id="swarm-pad-progress">0%</span><span class="swarm-stat-lbl">PAD</span></div>' +
-                        '<div class="swarm-stat"><span class="swarm-stat-val" id="swarm-phase">SURVEY</span><span class="swarm-stat-lbl">PHASE</span></div>'
-                    :
-                        '<div class="swarm-stat"><span class="swarm-stat-val" id="swarm-ice">0</span><span class="swarm-stat-lbl">ICE</span></div>' +
-                        '<div class="swarm-stat"><span class="swarm-stat-val" id="swarm-in-shadow">0</span><span class="swarm-stat-lbl">IN SHADOW</span></div>'
-                    ) +
-                '</div>' +
+                '<button class="rp-pov pov-btn" data-rover="' + r.id + '">POV</button>' +
+            '</div>' +
+            '<div class="rp-battery">' +
+                '<div class="rp-bat-bar"><div class="rp-bat-fill battery-fill high" id="batbar-' + r.id + '" style="width:' + state.battery + '%"></div></div>' +
+                '<span class="rp-bat-val" id="bat-' + r.id + '">' + state.battery.toFixed(0) + '%</span>' +
+            '</div>' +
+            '<div class="rp-task" id="task-' + r.id + '">' + (state.task || 'IDLE') + '</div>' +
+            '<div class="rp-meta">' +
+                '<span id="sensor-' + r.id + '">100%</span>' +
+                '<span id="pos-' + r.id + '">(0,0)</span>' +
+                '<span id="spd-' + r.id + '">0</span>' +
+                '<span id="dist-' + r.id + '">0</span>' +
             '</div>';
-    } else {
-        const rovers = activeRovers();
-        for (const r of rovers) {
-            const state = roverStates[r.id];
-            if (!state) continue;
-            const hexColor = '#' + r.color.toString(16).padStart(6, '0');
-            const card = document.createElement('div');
-            card.className = 'rover-pill';
-            card.id = 'rover-card-' + r.id;
-            card.style.borderTopColor = hexColor;
-            card.innerHTML =
-                '<div class="rp-header">' +
-                    '<div class="rp-name-group">' +
-                        '<span class="rp-dot" style="background:' + hexColor + '"></span>' +
-                        '<span class="rp-name" style="color:' + hexColor + '">' + r.name + '</span>' +
-                    '</div>' +
-                    '<button class="rp-pov pov-btn" data-rover="' + r.id + '">POV</button>' +
-                '</div>' +
-                '<div class="rp-battery">' +
-                    '<div class="rp-bat-bar"><div class="rp-bat-fill battery-fill high" id="batbar-' + r.id + '" style="width:' + state.battery + '%"></div></div>' +
-                    '<span class="rp-bat-val" id="bat-' + r.id + '">' + state.battery.toFixed(0) + '%</span>' +
-                '</div>' +
-                '<div class="rp-task" id="task-' + r.id + '">' + (state.task || 'IDLE') + '</div>' +
-                '<div class="rp-meta">' +
-                    '<span id="sensor-' + r.id + '">100%</span>' +
-                    '<span id="pos-' + r.id + '">(0,0)</span>' +
-                    '<span id="spd-' + r.id + '">0</span>' +
-                    '<span id="dist-' + r.id + '">0</span>' +
-                '</div>';
-            card.querySelector('.rp-pov').addEventListener('click', (e) => {
-                e.stopPropagation();
-                toggleRoverPOV(r.id);
-            });
-            container.appendChild(card);
-        }
+        card.querySelector('.rp-pov').addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleRoverPOV(r.id);
+        });
+        container.appendChild(card);
     }
     document.getElementById('mission-status').textContent = 'MISSION ACTIVE';
     document.getElementById('mission-status').className = 'status-active';
@@ -2122,33 +1804,6 @@ function updateHUD() {
         const s = Math.floor(elapsed % 60).toString().padStart(2, '0');
         document.getElementById('mission-clock').textContent = 'T+ ' + h + ':' + m + ':' + s;
     }
-
-    if (swarmMode) {
-        // Aggregate swarm stats
-        const states = Object.values(roverStates);
-        const active = states.filter(s => s.battery > 0).length;
-        const avgBat = states.reduce((sum, s) => sum + s.battery, 0) / states.length;
-        const minBat = Math.min(...states.map(s => s.battery));
-        const inShadow = states.filter(s => s.in_shadow).length;
-
-        const el = id => document.getElementById(id);
-        if (el('swarm-active')) el('swarm-active').textContent = active + '/' + states.length;
-        if (el('swarm-avg-bat')) el('swarm-avg-bat').textContent = avgBat.toFixed(0) + '%';
-        if (el('swarm-min-bat')) el('swarm-min-bat').textContent = minBat.toFixed(0) + '%';
-        if (el('swarm-in-shadow')) el('swarm-in-shadow').textContent = inShadow;
-        if (el('swarm-ice')) el('swarm-ice').textContent = iceDeposits.filter(d => d.discovered).length + '/' + iceDeposits.length;
-
-        // Coverage stat
-        if (selectedCrater) {
-            const R = selectedCrater.diameter_km * CRATER_SCALE;
-            const cellSize = R * 0.1;
-            const maxCells = Math.pow(Math.floor(R * 2 / cellSize), 2) * 0.7;
-            const covPct = Math.min(100, (missionStats.coverageCells.size / maxCells) * 100);
-            if (el('swarm-coverage')) el('swarm-coverage').textContent = covPct.toFixed(0) + '%';
-        }
-        return;
-    }
-
     for (const [id, state] of Object.entries(roverStates)) {
         const bat = document.getElementById('bat-' + id);
         const batBar = document.getElementById('batbar-' + id);
@@ -2179,11 +1834,18 @@ function showToast(message, type = 'info', duration = 4000) {
     toast.className = 'toast toast-' + type;
     toast.innerHTML = '<span class="toast-icon">' + (icons[type] || 'ℹ') + '</span><span>' + message + '</span>';
     container.appendChild(toast);
-    requestAnimationFrame(() => toast.classList.add('visible'));
-    setTimeout(() => {
-        toast.classList.remove('visible');
-        setTimeout(() => toast.remove(), 300);
-    }, duration);
+    if (typeof gsap !== 'undefined') {
+        gsap.fromTo(toast, { x: 120, opacity: 0 }, { x: 0, opacity: 1, duration: 0.35, ease: 'back.out(1.2)' });
+        setTimeout(() => {
+            gsap.to(toast, { x: 120, opacity: 0, duration: 0.25, ease: 'power2.in', onComplete: () => toast.remove() });
+        }, duration);
+    } else {
+        requestAnimationFrame(() => toast.classList.add('visible'));
+        setTimeout(() => {
+            toast.classList.remove('visible');
+            setTimeout(() => toast.remove(), 300);
+        }, duration);
+    }
     // Keep max 5 toasts
     while (container.children.length > 5) container.removeChild(container.firstChild);
 }
@@ -2194,10 +1856,6 @@ function showToast(message, type = 'info', duration = 4000) {
 function initViewTabs() {
     const container = document.getElementById('view-tabs');
     if (!container) return;
-    if (swarmMode) {
-        container.innerHTML = '<button class="view-tab active" data-view="orbit" onclick="switchView(\'orbit\')">ORBIT</button>';
-        return;
-    }
     container.innerHTML = '<button class="view-tab active" data-view="orbit" onclick="switchView(\'orbit\')">ORBIT</button>';
     const rovers = activeRovers();
     for (const r of rovers) {
@@ -2254,6 +1912,11 @@ function showPostMission() {
     const overlay = document.getElementById('post-mission');
     if (!overlay) return;
     overlay.style.display = '';
+    if (typeof gsap !== 'undefined') {
+        gsap.from('.pm-backdrop', { opacity: 0, duration: 0.4 });
+        gsap.from('.pm-card', { y: 50, opacity: 0, duration: 0.5, delay: 0.1, ease: 'power3.out' });
+        gsap.from('.pm-stat', { y: 20, opacity: 0, stagger: 0.07, duration: 0.3, delay: 0.3, ease: 'power2.out' });
+    }
 
     const R = selectedCrater ? selectedCrater.diameter_km * CRATER_SCALE : 750;
     const cellSize = R * 0.1;
@@ -2289,36 +1952,20 @@ function showPostMission() {
     const roverGrid = el('pm-rover-grid');
     if (roverGrid) {
         roverGrid.innerHTML = '';
-        if (swarmMode) {
-            // Aggregate summary for swarm
-            const states = Object.values(roverStates);
-            const active = states.filter(s => s.battery > 0).length;
-            const avgBat = states.reduce((s, r) => s + r.battery, 0) / states.length;
-            const avgSensor = states.reduce((s, r) => s + r.sensor_health, 0) / states.length;
-            roverGrid.innerHTML =
-                '<div class="pm-rover">' +
-                    '<div class="pm-rover-name" style="color:#4a9eff">SWARM AGGREGATE (' + states.length + ' UNITS)</div>' +
-                    '<div class="pm-rover-stat"><span>Active</span><span>' + active + '/' + states.length + '</span></div>' +
-                    '<div class="pm-rover-stat"><span>Avg Battery</span><span>' + avgBat.toFixed(1) + '%</span></div>' +
-                    '<div class="pm-rover-stat"><span>Avg Sensors</span><span>' + avgSensor.toFixed(1) + '%</span></div>' +
-                    (constructionMode ? '<div class="pm-rover-stat"><span>Pad Complete</span><span>' + padProgress.toFixed(1) + '%</span></div>' : '') +
-                '</div>';
-        } else {
-            for (const r of activeRovers()) {
-                const state = roverStates[r.id];
-                if (!state) continue;
-                const hexColor = '#' + r.color.toString(16).padStart(6, '0');
-                const dist = (missionStats.totalDistance[r.id] || 0).toFixed(0);
-                const div = document.createElement('div');
-                div.className = 'pm-rover';
-                div.innerHTML =
-                    '<div class="pm-rover-name" style="color:' + hexColor + '">' + r.name + '</div>' +
-                    '<div class="pm-rover-stat"><span>Battery</span><span>' + state.battery.toFixed(1) + '%</span></div>' +
-                    '<div class="pm-rover-stat"><span>Distance</span><span>' + dist + ' m</span></div>' +
-                    '<div class="pm-rover-stat"><span>Sensors</span><span>' + state.sensor_health.toFixed(1) + '%</span></div>' +
-                    '<div class="pm-rover-stat"><span>Last Task</span><span>' + (state.task || 'IDLE') + '</span></div>';
-                roverGrid.appendChild(div);
-            }
+        for (const r of activeRovers()) {
+            const state = roverStates[r.id];
+            if (!state) continue;
+            const hexColor = '#' + r.color.toString(16).padStart(6, '0');
+            const dist = (missionStats.totalDistance[r.id] || 0).toFixed(0);
+            const div = document.createElement('div');
+            div.className = 'pm-rover';
+            div.innerHTML =
+                '<div class="pm-rover-name" style="color:' + hexColor + '">' + r.name + '</div>' +
+                '<div class="pm-rover-stat"><span>Battery</span><span>' + state.battery.toFixed(1) + '%</span></div>' +
+                '<div class="pm-rover-stat"><span>Distance</span><span>' + dist + ' m</span></div>' +
+                '<div class="pm-rover-stat"><span>Sensors</span><span>' + state.sensor_health.toFixed(1) + '%</span></div>' +
+                '<div class="pm-rover-stat"><span>Last Task</span><span>' + (state.task || 'IDLE') + '</span></div>';
+            roverGrid.appendChild(div);
         }
     }
 
@@ -2416,42 +2063,19 @@ function getElapsedTime() {
 function updateAuditGauges(scores) {
     const gaugeIds = ['helpfulness', 'correctness', 'coherence', 'complexity', 'verbosity'];
     for (const id of gaugeIds) {
-        // Legacy bottom-bar gauges
         const gauge = document.getElementById('gauge-' + id);
-        if (gauge) {
-            const value = gauge.querySelector('.score-val');
-            if (value) {
-                const score = scores[id] || 0;
-                value.textContent = score.toFixed(1);
-                const norm = score / 4.0;
-                value.style.color = norm > 0.7 ? '#00d47e' : norm > 0.4 ? '#f0ad4e' : '#ff3b5c';
-            }
-        }
-        // NVIDIA panel bars
-        const nvItem = document.getElementById('nv-' + id);
-        if (nvItem) {
-            const score = scores[id] || 0;
+        if (!gauge) continue;
+        const score = scores[id] || 0;
+        const value = gauge.querySelector('.score-val');
+        if (value) {
+            value.textContent = score.toFixed(1);
             const norm = score / 4.0;
-            const fill = nvItem.querySelector('.nv-bar-fill');
-            const val = nvItem.querySelector('.nv-val');
-            if (fill) {
-                fill.style.width = (norm * 100) + '%';
-                fill.style.background = norm > 0.7 ? '#76b900' : norm > 0.4 ? '#f0ad4e' : '#ff3b5c';
-            }
-            if (val) {
-                val.textContent = score.toFixed(1);
-                val.style.color = norm > 0.7 ? '#76b900' : norm > 0.4 ? '#f0ad4e' : '#ff3b5c';
-            }
+            value.style.color = norm > 0.7 ? '#00d47e' : norm > 0.4 ? '#f0ad4e' : '#ff3b5c';
         }
     }
     // Track for post-mission analytics
     nemotronHistory.push({ time: getElapsedTime(), ...scores });
     totalAIDecisions++;
-
-    // Update NVIDIA panel prediction & decision count
-    const nvDecisions = document.getElementById('nv-total-decisions');
-    if (nvDecisions) nvDecisions.textContent = totalAIDecisions + ' decisions audited';
-    updateNvidiaPrediction();
 }
 
 // ============================================
@@ -2521,9 +2145,6 @@ function connectWebSockets() {
 
     addLogEntry('system', 'Mission deployed to <b>' + selectedCrater.name + '</b> crater (' + selectedCrater.diameter_km + 'km diameter). Shadow advancing at ' + missionConfig.shadowSpeed + ' m/s.');
     addLogEntry('system', '<b>' + missionConfig.numRovers + '</b> rovers deployed. Initial battery: ' + missionConfig.initialBattery + '%. Duration: ' + missionConfig.missionDuration + 's.');
-    if (swarmMode) {
-        addLogEntry('system', '<b>' + SWARM_COUNT + '</b> swarm rovers deployed (' + (constructionMode ? 'CONSTRUCTION' : 'EXPLORATION') + ' mode). Aggregate tracking only — individual agent identities not monitored.');
-    }
 }
 
 // ============================================
@@ -2551,13 +2172,16 @@ function animate() {
         controls.update();
     } else if (currentState === AppState.ZOOMING) {
         updateZoom(time);
+    } else if (currentState === AppState.LANDING) {
+        const dt2 = Math.min(clock.getDelta(), 0.1);
+        updateLandingParticles(dt2);
+        if (craterMaterial) craterMaterial.uniforms.uTime.value = time;
+        if (shadowMaterial) shadowMaterial.uniforms.uTime.value = time;
+        if (dustParticles) dustParticles.material.uniforms.uTime.value = time;
+        if (landerGroup) camera.lookAt(landerGroup.position);
     } else if (currentState === AppState.SIMULATION) {
         // Local simulation tick
-        if (constructionMode) {
-            tickConstructionSim(dt);
-        } else {
-            tickLocalSim(dt);
-        }
+        tickLocalSim(dt);
 
         if (craterMaterial) { craterMaterial.uniforms.uTime.value = time; craterMaterial.uniforms.uCameraPosition.value.copy(camera.position); }
         if (shadowMaterial) shadowMaterial.uniforms.uTime.value = time;
@@ -2568,8 +2192,10 @@ function animate() {
         updateMinimap();
         updateMissionAnalytics(dt);
         updateHUD();
-        updateMissionGoals();
-        if (!povRoverId) controls.update();
+        if (exploreMode) {
+            updateExploreRover(dt);
+        }
+        if (!povRoverId && !exploreMode) controls.update();
     }
 
     renderer.render(scene, camera);
@@ -2675,14 +2301,14 @@ function initMinimap() {
     minimapCanvas = document.getElementById('minimap-canvas');
     if (!minimapCanvas) return;
     minimapCtx = minimapCanvas.getContext('2d');
-    minimapCanvas.width = 170;
-    minimapCanvas.height = 170;
+    minimapCanvas.width = 180;
+    minimapCanvas.height = 180;
 }
 
 function updateMinimap() {
     if (!minimapCtx || !selectedCrater) return;
     const ctx = minimapCtx;
-    const w = 170, h = 170;
+    const w = 180, h = 180;
     const R = selectedCrater.diameter_km * CRATER_SCALE;
     const scale = (w * 0.45) / R;
 
@@ -2728,32 +2354,6 @@ function updateMinimap() {
     ctx.lineTo(shadowX, h/2 + R * scale);
     ctx.stroke();
     ctx.setLineDash([]);
-
-    // Landing pad (construction mode)
-    if (constructionMode && padCenter) {
-        const padMX = w/2 + padCenter.x * scale;
-        const padMZ = h/2 + padCenter.z * scale;
-        const padR = padTargetRadius * scale;
-        // Pad outline
-        ctx.strokeStyle = padPhase === 'COMPLETE' ? '#76b900' : 'rgba(74, 158, 255, 0.5)';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(padMX, padMZ, padR, 0, Math.PI * 2);
-        ctx.stroke();
-        // Fill progress arc
-        ctx.strokeStyle = padPhase === 'COMPLETE' ? '#76b900' : '#f0ad4e';
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.arc(padMX, padMZ, padR - 2, -Math.PI/2, -Math.PI/2 + (padProgress/100) * Math.PI * 2);
-        ctx.stroke();
-        // Collection zones
-        for (const zone of collectionZones) {
-            ctx.fillStyle = 'rgba(240, 173, 78, 0.3)';
-            ctx.beginPath();
-            ctx.arc(w/2 + zone.x * scale, h/2 + zone.z * scale, 4, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    }
 
     // Ice deposits
     for (const dep of iceDeposits) {
@@ -2831,9 +2431,8 @@ function updateMinimap() {
     }
 
     // Rovers
-    const allPalettes = isSwarmMode() ? SWARM_PALETTE : ROVER_PALETTE;
     for (const [id, state] of Object.entries(roverStates)) {
-        const r = allPalettes.find(p => p.id === id);
+        const r = ROVER_PALETTE.find(p => p.id === id);
         if (!r) continue;
         const mx = w/2 + state.x * scale;
         const my = h/2 + state.z * scale;
@@ -3033,6 +2632,9 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && povRoverId) {
         window.exitPOV();
     }
+    if (e.key === 'Escape' && exploreMode) {
+        window.toggleExploreMode();
+    }
 });
 document.addEventListener('keyup', (e) => {
     keysDown[e.key.toLowerCase()] = false;
@@ -3217,184 +2819,925 @@ function applyScenario() {
 }
 
 // ============================================
-// NVIDIA PREDICTION (synthesised from Nemotron audit history)
+// EDUCATIONAL INFO PANEL
 // ============================================
-function updateNvidiaPrediction() {
-    if (nemotronHistory.length === 0) return;
-    // Compute rolling average from last 10 audits
-    const recent = nemotronHistory.slice(-10);
-    const avgScore = recent.reduce((sum, h) => {
-        return sum + ((h.helpfulness||0)+(h.correctness||0)+(h.coherence||0)+(h.complexity||0)+(h.verbosity||0))/5;
-    }, 0) / recent.length;
+window.showEduPanel = function() {
+    if (!selectedCrater || !selectedCrater.education) return;
+    const panel = document.getElementById('edu-panel');
+    if (!panel) return;
+    panel.style.display = '';
 
-    // Map audit quality to success likelihood
-    const successPct = Math.min(98, Math.max(5, avgScore / 4.0 * 100 + (Math.random() - 0.5) * 5));
-    const riskPct = Math.max(2, 100 - successPct);
+    document.getElementById('edu-crater-name').textContent = selectedCrater.name + ' — Exploration History';
 
-    const el = id => document.getElementById(id);
-    if (el('nv-success-fill')) el('nv-success-fill').style.width = successPct + '%';
-    if (el('nv-success-pct')) el('nv-success-pct').textContent = successPct.toFixed(0) + '%';
-    if (el('nv-risk-fill')) el('nv-risk-fill').style.width = riskPct + '%';
-    if (el('nv-risk-pct')) el('nv-risk-pct').textContent = riskPct.toFixed(0) + '%';
+    // Render timeline
+    const timelineEl = document.getElementById('edu-tab-timeline');
+    const edu = selectedCrater.education;
+    timelineEl.innerHTML = '<div class="edu-timeline">' + edu.history.map(h =>
+        '<div class="edu-tl-item">' +
+            '<div class="edu-tl-year">' + h.year + '</div>' +
+            '<div class="edu-tl-content">' +
+                '<div class="edu-tl-mission">' + h.mission + ' <span class="edu-tl-agency">' + h.agency + '</span></div>' +
+                '<div class="edu-tl-detail">' + h.detail + '</div>' +
+                '<div class="edu-tl-cite">' + h.citation + '</div>' +
+            '</div>' +
+        '</div>'
+    ).join('') + '</div>';
 
-    // Identify potential failure modes
-    const failures = [];
-    const lastH = nemotronHistory[nemotronHistory.length - 1];
-    if ((lastH.coherence || 0) < 2.0) failures.push('Low coherence — coordination risk');
-    if ((lastH.correctness || 0) < 2.0) failures.push('Low correctness — navigation errors');
-    if ((lastH.helpfulness || 0) < 1.5) failures.push('Low helpfulness — inefficient task allocation');
-    const avgBat = Object.values(roverStates).reduce((s, r) => s + r.battery, 0) / Math.max(1, Object.keys(roverStates).length);
-    if (avgBat < 40) failures.push('Battery critical — mission endurance at risk');
-    const inShadow = Object.values(roverStates).filter(s => s.in_shadow).length;
-    if (inShadow > 2) failures.push(`${inShadow} rovers in shadow zone`);
+    // Render discoveries
+    const discEl = document.getElementById('edu-tab-discoveries');
+    discEl.innerHTML = '<ul class="edu-disc-list">' + edu.discoveries.map(d =>
+        '<li class="edu-disc-item">' + d + '</li>'
+    ).join('') + '</ul>';
 
-    const failEl = el('nv-failures');
-    if (failEl) {
-        failEl.innerHTML = failures.length > 0 ?
-            failures.map(f => '<div class="nv-fail-item">&#9888; ' + f + '</div>').join('') :
-            '<div class="nv-fail-item nv-ok">&#10003; No critical risks detected</div>';
+    // Render context
+    const ctxEl = document.getElementById('edu-tab-context');
+    ctxEl.innerHTML = '<div class="edu-context">' + edu.lunarContext + '</div>';
+
+    // Reset tabs
+    document.querySelectorAll('.edu-tab').forEach(t => t.classList.remove('active'));
+    document.querySelector('.edu-tab[data-tab="timeline"]').classList.add('active');
+    document.querySelectorAll('.edu-tab-content').forEach(c => c.style.display = 'none');
+    document.getElementById('edu-tab-timeline').style.display = '';
+
+    if (typeof gsap !== 'undefined') {
+        gsap.from('.edu-backdrop', { opacity: 0, duration: 0.3 });
+        gsap.from('.edu-card', { y: 40, opacity: 0, duration: 0.4, delay: 0.1, ease: 'power3.out' });
+        gsap.from('.edu-tl-item', { x: -20, opacity: 0, stagger: 0.08, duration: 0.3, delay: 0.2, ease: 'power2.out' });
     }
-}
+};
+
+window.closeEduPanel = function() {
+    const panel = document.getElementById('edu-panel');
+    if (!panel) return;
+    if (typeof gsap !== 'undefined') {
+        gsap.to('.edu-card', { y: 30, opacity: 0, duration: 0.25, ease: 'power2.in', onComplete: () => panel.style.display = 'none' });
+    } else {
+        panel.style.display = 'none';
+    }
+};
+
+window.switchEduTab = function(tab) {
+    document.querySelectorAll('.edu-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    document.querySelectorAll('.edu-tab-content').forEach(c => c.style.display = 'none');
+    const el = document.getElementById('edu-tab-' + tab);
+    if (el) {
+        el.style.display = '';
+        if (typeof gsap !== 'undefined') {
+            gsap.from(el, { opacity: 0, y: 10, duration: 0.25 });
+        }
+    }
+};
 
 // ============================================
-// MISSION GOALS / OBJECTIVES TRACKING
+// LANDING SEQUENCE (Cinematic Cutscene)
 // ============================================
-function initMissionGoals() {
-    const goalsPanel = document.getElementById('mission-goals');
-    const listEl = document.getElementById('mission-objectives-list');
-    if (!goalsPanel || !listEl) return;
+function createLanderModel() {
+    const group = new THREE.Group();
 
-    const sc = SCENARIOS[missionConfig.scenario] || SCENARIOS.exploration;
-    listEl.innerHTML = '';
-    sc.objectives.forEach((obj, i) => {
-        const item = document.createElement('div');
-        item.className = 'mg-objective';
-        item.id = 'mg-obj-' + i;
-        item.innerHTML = '<span class="mg-check">&#9675;</span><span class="mg-obj-text">' + obj + '</span>';
-        listEl.appendChild(item);
+    // Descent stage body
+    const bodyGeo = new THREE.CylinderGeometry(6, 8, 5, 8);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0xc9a84c, roughness: 0.3, metalness: 0.8 });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    group.add(body);
+
+    // Thrust nozzle
+    const nozzleGeo = new THREE.ConeGeometry(3, 4, 8);
+    const nozzleMat = new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.5, metalness: 0.7 });
+    const nozzle = new THREE.Mesh(nozzleGeo, nozzleMat);
+    nozzle.position.y = -4.5;
+    nozzle.rotation.x = Math.PI;
+    group.add(nozzle);
+
+    // Landing legs (4)
+    for (let i = 0; i < 4; i++) {
+        const angle = (i / 4) * Math.PI * 2;
+        const legGeo = new THREE.CylinderGeometry(0.3, 0.3, 10, 6);
+        const legMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.6 });
+        const leg = new THREE.Mesh(legGeo, legMat);
+        leg.position.set(Math.cos(angle) * 7, -5, Math.sin(angle) * 7);
+        leg.rotation.z = Math.cos(angle) * 0.3;
+        leg.rotation.x = Math.sin(angle) * 0.3;
+        group.add(leg);
+
+        const padGeo = new THREE.CylinderGeometry(1.5, 1.5, 0.3, 12);
+        const pad = new THREE.Mesh(padGeo, new THREE.MeshStandardMaterial({ color: 0x555555 }));
+        pad.position.set(Math.cos(angle) * 9, -9.5, Math.sin(angle) * 9);
+        group.add(pad);
+    }
+
+    // Antenna
+    const antGeo = new THREE.CylinderGeometry(0.15, 0.15, 6, 6);
+    const ant = new THREE.Mesh(antGeo, new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 0.9 }));
+    ant.position.set(0, 5, 0);
+    group.add(ant);
+
+    // Solar panels
+    const panelMat = new THREE.MeshStandardMaterial({ color: 0x0a2a6a, roughness: 0.15, metalness: 0.85 });
+    [-1, 1].forEach(side => {
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(12, 0.1, 5), panelMat);
+        panel.position.set(side * 10, 1, 0);
+        group.add(panel);
     });
 
-    goalsPanel.style.display = '';
+    return group;
 }
 
-function updateMissionGoals() {
-    if (!missionActive) return;
-    const sc = SCENARIOS[missionConfig.scenario] || SCENARIOS.exploration;
-    if (!sc) return;
+function createLanderParticles() {
+    const COUNT = 300;
+    const geo = new THREE.BufferGeometry();
+    const positions = new Float32Array(COUNT * 3);
+    const velocities = new Float32Array(COUNT * 3);
+    const lifetimes = new Float32Array(COUNT);
 
-    // Compute progress per objective based on simulation state
-    let completed = 0;
-    const total = sc.objectives.length;
+    for (let i = 0; i < COUNT; i++) {
+        positions[i*3] = (Math.random() - 0.5) * 4;
+        positions[i*3+1] = -6 - Math.random() * 20;
+        positions[i*3+2] = (Math.random() - 0.5) * 4;
+        velocities[i*3] = (Math.random() - 0.5) * 2;
+        velocities[i*3+1] = -5 - Math.random() * 15;
+        velocities[i*3+2] = (Math.random() - 0.5) * 2;
+        lifetimes[i] = Math.random();
+    }
 
-    // Generic progress heuristics based on scenario metrics
-    const R = selectedCrater ? selectedCrater.diameter_km * CRATER_SCALE : 750;
-    const cellSize = R * 0.1;
-    const maxCells = Math.pow(Math.floor(R * 2 / cellSize), 2) * 0.7;
-    const coveragePct = Math.min(100, (missionStats.coverageCells.size / maxCells) * 100);
-    const iceFound = missionStats.iceFound;
-    const totalIce = iceDeposits.length;
-    const avgBat = Object.values(roverStates).reduce((s, r) => s + r.battery, 0) / Math.max(1, Object.keys(roverStates).length);
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.userData = { velocities, lifetimes };
 
-    if (constructionMode) {
-        // Construction-specific objective completion
-        const checks = [
-            padPhaseIndex >= 1,  // Survey done
-            padPhaseIndex >= 2,  // Grading done / collection started
-            padPhaseIndex >= 3,  // Collection done / sintering started
-            padPhaseIndex >= 4,  // Sintering done / placing started
-            padPhase === 'COMPLETE' // Pad verified
-        ];
-        checks.forEach((done, i) => {
-            const el = document.getElementById('mg-obj-' + i);
-            if (el) {
-                const check = el.querySelector('.mg-check');
-                if (done && check) { check.innerHTML = '&#9679;'; el.classList.add('mg-done'); }
+    const particles = new THREE.Points(geo, new THREE.PointsMaterial({
+        size: 3, color: 0xffaa33, transparent: true, opacity: 0.8,
+        blending: THREE.AdditiveBlending, depthWrite: false
+    }));
+
+    return particles;
+}
+
+function createLandingDust(craterRadius, craterDepth) {
+    const COUNT = 500;
+    const geo = new THREE.BufferGeometry();
+    const positions = new Float32Array(COUNT * 3);
+    const velocities = new Float32Array(COUNT * 3);
+
+    for (let i = 0; i < COUNT; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        positions[i*3] = Math.cos(angle) * 2;
+        positions[i*3+1] = craterHeight(0, 0) + 1;
+        positions[i*3+2] = Math.sin(angle) * 2;
+        const speed = 5 + Math.random() * 15;
+        velocities[i*3] = Math.cos(angle) * speed;
+        velocities[i*3+1] = 2 + Math.random() * 5;
+        velocities[i*3+2] = Math.sin(angle) * speed;
+    }
+
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.userData = { velocities, startTime: 0, active: false };
+
+    const dust = new THREE.Points(geo, new THREE.PointsMaterial({
+        size: 2.5, color: 0x998877, transparent: true, opacity: 0,
+        blending: THREE.NormalBlending, depthWrite: false
+    }));
+
+    return dust;
+}
+
+function startLandingSequence() {
+    currentState = AppState.LANDING;
+
+    const craterRadius = selectedCrater.diameter_km * CRATER_SCALE;
+    const craterDepth = selectedCrater.depth_km * DEPTH_SCALE;
+
+    // Create terrain first
+    createLocalTerrain(craterRadius, craterDepth);
+    createShadowOverlay(craterRadius);
+    createDustParticles(craterRadius, craterDepth);
+
+    const landingY = craterHeight(0, 0) + 10;
+    const startY = landingY + 250;
+
+    landerGroup = createLanderModel();
+    landerGroup.position.set(0, startY, 0);
+    landerGroup.scale.setScalar(0.8);
+    scene.add(landerGroup);
+
+    landerParticles = createLanderParticles();
+    landerGroup.add(landerParticles);
+
+    landingDustPlume = createLandingDust(craterRadius, craterDepth);
+    scene.add(landingDustPlume);
+
+    // Camera choreography
+    const camStart = { x: craterRadius * 0.3, y: startY + 100, z: craterRadius * 0.5 };
+    camera.position.set(camStart.x, camStart.y, camStart.z);
+    camera.lookAt(0, startY, 0);
+
+    if (typeof gsap !== 'undefined') {
+        landingTimeline = gsap.timeline({
+            onComplete: () => {
+                finishLanding(craterRadius, craterDepth);
             }
-            if (done) completed++;
+        });
+
+        // Phase 1: Wide descent (0-2.5s)
+        landingTimeline.to(landerGroup.position, { y: landingY + 80, duration: 2.5, ease: 'power1.in' }, 0);
+        landingTimeline.to(camera.position, { x: craterRadius * 0.2, y: landingY + 120, z: craterRadius * 0.35, duration: 2.5, ease: 'power1.inOut' }, 0);
+
+        // Phase 2: Deceleration (2.5-4.5s)
+        landingTimeline.to(landerGroup.position, { y: landingY + 20, duration: 2, ease: 'power2.out' });
+        landingTimeline.to(camera.position, { x: craterRadius * 0.12, y: landingY + 35, z: craterRadius * 0.2, duration: 2, ease: 'power2.inOut' }, '-=2');
+
+        // Phase 3: Final descent + touchdown (4.5-6s)
+        landingTimeline.to(landerGroup.position, { y: landingY, duration: 1.5, ease: 'bounce.out' });
+        landingTimeline.to(camera.position, { y: landingY + 25, duration: 1.5, ease: 'power2.inOut' }, '-=1.5');
+
+        // Phase 4: Camera shake on impact
+        landingTimeline.call(() => {
+            if (landingDustPlume) {
+                landingDustPlume.material.opacity = 0.6;
+                landingDustPlume.geometry.userData.active = true;
+                landingDustPlume.geometry.userData.startTime = clock.getElapsedTime();
+            }
+            // Camera shake
+            const originalPos = camera.position.clone();
+            gsap.to(camera.position, {
+                x: originalPos.x + (Math.random() - 0.5) * 4,
+                y: originalPos.y + (Math.random() - 0.5) * 3,
+                z: originalPos.z + (Math.random() - 0.5) * 4,
+                duration: 0.06, repeat: 6, yoyo: true, ease: 'power1.inOut'
+            });
+        });
+
+        // Phase 5: Settle (6-7.5s)
+        landingTimeline.to({}, { duration: 1.5 });
+
+        // Phase 6: Pull back to overview (7.5-8.5s)
+        landingTimeline.to(camera.position, {
+            x: 0, y: craterRadius * 0.5, z: craterRadius * 0.7,
+            duration: 1.0, ease: 'power2.inOut'
         });
     } else {
-        // General mission objective tracking
-        const checks = [];
-        for (let i = 0; i < total; i++) {
-            const obj = sc.objectives[i].toLowerCase();
-            let done = false;
-            if (obj.includes('discover') || obj.includes('ice')) done = iceFound >= totalIce;
-            else if (obj.includes('coverage') || obj.includes('map')) done = coveragePct > 80;
-            else if (obj.includes('shadow') || obj.includes('return') || obj.includes('escape')) done = avgBat > 20;
-            else if (obj.includes('relay') || obj.includes('communication')) done = coveragePct > 60;
-            else if (obj.includes('locate')) done = iceFound > 0;
-            else if (obj.includes('mine') || obj.includes('extract')) done = iceFound >= Math.ceil(totalIce * 0.5);
-            else done = coveragePct > 50;
-            checks.push(done);
-        }
-        checks.forEach((done, i) => {
-            const el = document.getElementById('mg-obj-' + i);
-            if (el) {
-                const check = el.querySelector('.mg-check');
-                if (done && check) { check.innerHTML = '&#9679;'; el.classList.add('mg-done'); }
+        // Fallback: skip to simulation
+        finishLanding(craterRadius, craterDepth);
+    }
+}
+
+function updateLandingParticles(dt) {
+    if (landerParticles && landerGroup) {
+        const positions = landerParticles.geometry.attributes.position.array;
+        const vels = landerParticles.geometry.userData.velocities;
+        const lifetimes = landerParticles.geometry.userData.lifetimes;
+
+        for (let i = 0; i < lifetimes.length; i++) {
+            lifetimes[i] -= dt * 2;
+            if (lifetimes[i] <= 0) {
+                // Respawn
+                positions[i*3] = (Math.random() - 0.5) * 3;
+                positions[i*3+1] = -5;
+                positions[i*3+2] = (Math.random() - 0.5) * 3;
+                lifetimes[i] = 0.5 + Math.random() * 0.5;
+            } else {
+                positions[i*3] += vels[i*3] * dt;
+                positions[i*3+1] += vels[i*3+1] * dt;
+                positions[i*3+2] += vels[i*3+2] * dt;
             }
-            if (done) completed++;
-        });
+        }
+        landerParticles.geometry.attributes.position.needsUpdate = true;
+
+        // Fade particles as lander approaches ground
+        const altitude = landerGroup.position.y - (craterHeight(0, 0) + 10);
+        landerParticles.material.opacity = Math.min(0.9, Math.max(0.1, altitude / 100));
     }
 
-    // Update progress bar
-    const pct = total > 0 ? (completed / total) * 100 : 0;
-    const fill = document.getElementById('mission-progress-fill');
-    const pctEl = document.getElementById('mission-progress-pct');
-    if (fill) fill.style.width = pct + '%';
-    if (pctEl) pctEl.textContent = pct.toFixed(0) + '%';
+    // Dust plume
+    if (landingDustPlume && landingDustPlume.geometry.userData.active) {
+        const positions = landingDustPlume.geometry.attributes.position.array;
+        const vels = landingDustPlume.geometry.userData.velocities;
+        const elapsed = clock.getElapsedTime() - landingDustPlume.geometry.userData.startTime;
+
+        for (let i = 0; i < vels.length / 3; i++) {
+            positions[i*3] += vels[i*3] * dt * 0.5;
+            positions[i*3+1] += vels[i*3+1] * dt * 0.3;
+            positions[i*3+2] += vels[i*3+2] * dt * 0.5;
+            // Gravity settling
+            vels[i*3+1] -= 1.625 * dt;
+        }
+        landingDustPlume.geometry.attributes.position.needsUpdate = true;
+        landingDustPlume.material.opacity = Math.max(0, 0.6 - elapsed * 0.3);
+    }
+}
+
+function finishLanding(craterRadius, craterDepth) {
+    // Clean up lander
+    if (landerGroup) { scene.remove(landerGroup); landerGroup = null; }
+    if (landerParticles) landerParticles = null;
+    if (landingDustPlume) { scene.remove(landingDustPlume); landingDustPlume = null; }
+    landingTimeline = null;
+
+    // Continue to simulation
+    transitionToSimulation();
 }
 
 // ============================================
-// INTERACTIVE ONBOARDING
+// CRATER EXPLORATION MODE
+// User drives a rover in 3rd person
 // ============================================
-let onboardingStep = 0;
+window.toggleExploreMode = function() {
+    if (!missionActive && currentState !== AppState.SIMULATION) return;
 
-window.advanceOnboarding = function(step) {
-    const overlay = document.getElementById('onboarding-overlay');
-    if (!overlay) return;
+    exploreMode = !exploreMode;
+    const btn = document.getElementById('explore-btn');
+    const hud = document.getElementById('explore-hud');
 
-    // Hide current step
-    const current = document.getElementById('onb-step-' + step);
-    if (current) current.style.display = 'none';
+    if (exploreMode) {
+        // Enter explore mode
+        if (btn) btn.classList.add('active');
+        if (hud) {
+            hud.style.display = '';
+            if (typeof gsap !== 'undefined') gsap.from(hud, { y: 30, opacity: 0, duration: 0.3 });
+        }
+        controls.enabled = false;
+        povRoverId = null;
+        if (document.getElementById('pov-hud')) document.getElementById('pov-hud').style.display = 'none';
 
-    if (step >= 3) {
-        // End onboarding
-        overlay.style.display = 'none';
-        document.getElementById('orbit-instruction').style.display = 'block';
-        return;
-    }
+        // Create explore rover if not exists
+        if (!exploreRoverMesh) {
+            exploreRoverMesh = createRoverMesh(0xffffff, 'EXPLORER');
+            exploreRoverMesh.scale.setScalar(ROVER_MESH_SCALE * 1.2);
+            scene.add(exploreRoverMesh);
+        }
 
-    // Show next step
-    const next = document.getElementById('onb-step-' + (step + 1));
-    if (next) next.style.display = '';
-    onboardingStep = step + 1;
+        // Position at a safe spot
+        const R = selectedCrater ? selectedCrater.diameter_km * CRATER_SCALE : 200;
+        exploreState.x = R * 0.3;
+        exploreState.z = 0;
+        exploreState.y = craterHeight(exploreState.x, exploreState.z) + 2;
+        exploreState.heading = Math.PI;
+        exploreState.speed = 0;
+        exploreState.battery = 100;
+        exploreRoverMesh.position.set(exploreState.x, exploreState.y, exploreState.z);
+        exploreRoverMesh.visible = true;
 
-    // Camera moves for each step
-    if (step === 1) {
-        // Slowly rotate camera to show south pole
-        animateCameraTo(200, -1300, 1300, controls.target.x, controls.target.y, controls.target.z, 2.5);
-    } else if (step === 2) {
-        // Pull slightly closer
-        animateCameraTo(-100, -1350, 1100, controls.target.x, controls.target.y, controls.target.z, 2.5);
+        addLogEntry('system', 'EXPLORE MODE — Manual rover control enabled. Use WASD to drive.');
+    } else {
+        // Exit explore mode
+        if (btn) btn.classList.remove('active');
+        if (hud) hud.style.display = 'none';
+        controls.enabled = true;
+        if (exploreRoverMesh) exploreRoverMesh.visible = false;
+        addLogEntry('system', 'EXPLORE MODE disabled. Orbit camera restored.');
     }
 };
 
-window.skipOnboarding = function() {
-    const overlay = document.getElementById('onboarding-overlay');
-    if (overlay) overlay.style.display = 'none';
-    document.getElementById('orbit-instruction').style.display = 'block';
-};
+function updateExploreRover(dt) {
+    if (!exploreMode || !exploreRoverMesh) return;
 
-function showOnboarding() {
-    const overlay = document.getElementById('onboarding-overlay');
-    if (overlay) {
-        overlay.style.display = '';
-        onboardingStep = 1;
+    const R = selectedCrater ? selectedCrater.diameter_km * CRATER_SCALE : 200;
+
+    // Steering
+    let steer = 0;
+    if (keysDown['a'] || keysDown['arrowleft']) steer = -exploreState.turnRate;
+    if (keysDown['d'] || keysDown['arrowright']) steer = exploreState.turnRate;
+
+    // Thrust
+    if (keysDown['w'] || keysDown['arrowup']) {
+        exploreState.speed += exploreState.acceleration * dt;
+    } else if (keysDown['s'] || keysDown['arrowdown']) {
+        exploreState.speed -= exploreState.acceleration * 2 * dt;
+    } else {
+        exploreState.speed *= (1 - exploreState.friction * dt);
     }
+
+    const boost = keysDown['shift'] ? 2 : 1;
+    exploreState.speed = Math.max(-exploreState.maxSpeed * 0.3, Math.min(exploreState.maxSpeed * boost, exploreState.speed));
+
+    // Turn (scales with speed)
+    const turnFactor = Math.min(1, Math.abs(exploreState.speed) / exploreState.maxSpeed);
+    exploreState.heading += steer * turnFactor * dt;
+
+    // Move
+    const newX = exploreState.x + Math.sin(exploreState.heading) * exploreState.speed * dt;
+    const newZ = exploreState.z + Math.cos(exploreState.heading) * exploreState.speed * dt;
+
+    // Slope check
+    const h = craterHeight(newX, newZ);
+    const dx = craterHeight(newX + 0.5, newZ) - craterHeight(newX - 0.5, newZ);
+    const dz = craterHeight(newX, newZ + 0.5) - craterHeight(newX, newZ - 0.5);
+    const slopeAngle = Math.atan(Math.sqrt(dx*dx + dz*dz)) * (180 / Math.PI);
+
+    if (slopeAngle <= 30) {
+        exploreState.x = newX;
+        exploreState.z = newZ;
+        exploreState.y = h + 2;
+    } else {
+        exploreState.speed *= -0.2;
+    }
+
+    // Clamp to crater
+    const r = Math.sqrt(exploreState.x ** 2 + exploreState.z ** 2);
+    if (r > R * 0.95) {
+        exploreState.x *= (R * 0.9) / r;
+        exploreState.z *= (R * 0.9) / r;
+        exploreState.speed *= 0.3;
+    }
+
+    // Battery
+    exploreState.battery -= 0.02 * Math.abs(exploreState.speed) * dt;
+    if (exploreState.x < shadowBoundaryX) exploreState.battery -= 0.1 * dt;
+    exploreState.battery = Math.max(0, exploreState.battery);
+
+    // Update mesh
+    exploreRoverMesh.position.set(exploreState.x, exploreState.y, exploreState.z);
+    exploreRoverMesh.rotation.y = exploreState.heading;
+
+    // Chase camera
+    const forward = new THREE.Vector3(Math.sin(exploreState.heading), 0, Math.cos(exploreState.heading));
+    const camTarget = new THREE.Vector3(
+        exploreState.x - forward.x * 35,
+        exploreState.y + 18,
+        exploreState.z - forward.z * 35
+    );
+    const lookTarget = new THREE.Vector3(
+        exploreState.x + forward.x * 25,
+        exploreState.y + 3,
+        exploreState.z + forward.z * 25
+    );
+    camera.position.lerp(camTarget, 0.07);
+    const tempTarget = new THREE.Vector3().copy(controls.target).lerp(lookTarget, 0.07);
+    camera.lookAt(tempTarget);
+
+    // Update HUD
+    const spdEl = document.getElementById('explore-speed');
+    const posEl = document.getElementById('explore-pos');
+    const batEl = document.getElementById('explore-battery');
+    const slopeEl = document.getElementById('explore-slope');
+    const altEl = document.getElementById('explore-alt');
+    if (spdEl) spdEl.textContent = Math.abs(exploreState.speed).toFixed(1) + ' m/s';
+    if (posEl) posEl.textContent = '(' + exploreState.x.toFixed(0) + ', ' + exploreState.z.toFixed(0) + ')';
+    if (batEl) batEl.textContent = exploreState.battery.toFixed(0) + '%';
+    if (slopeEl) slopeEl.textContent = slopeAngle.toFixed(1) + '\u00B0';
+    if (altEl) altEl.textContent = (-exploreState.y).toFixed(0) + ' m';
 }
 
 // ============================================
 // BOOT
 // ============================================
 init();
+
+// ============================================
+// INTERACTIVE WALKTHROUGH TOUR
+// Guided step-by-step introduction to the UI
+// ============================================
+const TOUR_STEPS = [
+    {
+        target: '#top-bar',
+        title: 'MISSION HEADER',
+        body: 'This bar shows the current crater name, mission elapsed time, and operational status. The scenario badge indicates which mission type is active.',
+        position: 'below',
+    },
+    {
+        target: '#sim-controls',
+        title: 'CONTROL BAR',
+        body: 'Switch camera views, control simulation speed, and access tools from here.<br><br><span class="tour-key">1×–10×</span> adjusts time. <span class="tour-key">THERMAL</span> toggles science heatmap. <span class="tour-key">VOICE</span> enables AI narrator. <span class="tour-key">END MISSION</span> stops and shows analytics.',
+        position: 'below',
+    },
+    {
+        target: '#view-tabs',
+        title: 'CAMERA VIEWS',
+        body: 'Switch between <b>ORBIT</b> (free camera) and individual rover POV cameras. Each rover tab shows a color-coded dot matching its identity on the map.',
+        position: 'below',
+    },
+    {
+        target: '#rover-strip',
+        title: 'ROVER STATUS STRIP',
+        body: 'Each pill shows a rover\'s name, battery bar, and current task. Click <b>POV</b> on any rover to enter its first-person chase camera.<br><br>Rovers that enter the shadow zone will glow red as a warning.',
+        position: 'below',
+    },
+    {
+        target: '#side-panel',
+        title: 'MISSION LOG',
+        body: 'Real-time feed of all swarm events — negotiations (CFP → BID → AWARD), Claude AI decisions, Nemotron audits, and system alerts. Click the toggle to collapse it.',
+        position: 'left',
+    },
+    {
+        target: '.bb-nemotron',
+        title: 'NEMOTRON AUDIT SCORES',
+        body: 'NVIDIA Nemotron-3 Nano evaluates every swarm decision across 5 dimensions, each scored 0–4:<br><br>' +
+              '<b>HELP</b> — Mission optimality<br>' +
+              '<b>CORR</b> — Logical soundness<br>' +
+              '<b>COHR</b> — Situational coherence<br>' +
+              '<b>CPLX</b> — Coordination sophistication<br>' +
+              '<b>VERB</b> — Communication conciseness<br><br>' +
+              'Colors: <span style="color:#00d47e">green</span> > 70%, <span style="color:#f0ad4e">amber</span> > 40%, <span style="color:#ff3b5c">red</span> below.',
+        position: 'above',
+    },
+    {
+        target: '.bb-metrics',
+        title: 'MISSION METRICS',
+        body: '<b>COV</b> — Crater coverage %<br>' +
+              '<b>DIST</b> — Total meters traveled<br>' +
+              '<b>ICE</b> — Deposits discovered / total<br>' +
+              '<b>BATT</b> — Average swarm battery<br><br>' +
+              'These update in real-time as rovers explore.',
+        position: 'above',
+    },
+    {
+        target: '#minimap-container',
+        title: 'TACTICAL MINIMAP',
+        body: 'Overhead radar showing all rover positions, ice deposits (diamonds), communication links, Voronoi territories, and the advancing shadow boundary (purple dashed line).',
+        position: 'left',
+    },
+    {
+        target: '#canvas-container',
+        title: 'KEYBOARD CONTROLS',
+        body: 'Navigate the 3D scene with these controls:<br><br>' +
+              '<span class="tour-key">W</span><span class="tour-key">A</span><span class="tour-key">S</span><span class="tour-key">D</span> — Move camera<br>' +
+              '<span class="tour-key">Q</span><span class="tour-key">E</span> — Altitude up/down<br>' +
+              '<span class="tour-key">H</span> — Toggle heatmap<br>' +
+              '<span class="tour-key">N</span> — Toggle narrator<br>' +
+              '<span class="tour-key">ESC</span> — Exit rover POV<br>' +
+              '<span class="tour-key">Shift</span> — Boost speed',
+        position: 'center',
+    },
+];
+
+let tourStep = 0;
+let tourActive = false;
+
+window.startTour = function() {
+    tourStep = 0;
+    tourActive = true;
+    document.getElementById('tour-overlay').style.display = '';
+    renderTourStep();
+};
+
+window.tourNext = function() {
+    if (tourStep < TOUR_STEPS.length - 1) {
+        tourStep++;
+        renderTourStep();
+    } else {
+        endTour();
+    }
+};
+
+window.tourPrev = function() {
+    if (tourStep > 0) {
+        tourStep--;
+        renderTourStep();
+    }
+};
+
+function endTour() {
+    tourActive = false;
+    const overlay = document.getElementById('tour-overlay');
+    overlay.style.display = 'none';
+    localStorage.setItem('regolith_tour_done', '1');
+}
+
+function renderTourStep() {
+    const step = TOUR_STEPS[tourStep];
+    const overlay = document.getElementById('tour-overlay');
+    const spotlight = document.getElementById('tour-spotlight');
+    const card = document.getElementById('tour-card');
+    const title = document.getElementById('tour-title');
+    const body = document.getElementById('tour-body');
+    const prevBtn = document.getElementById('tour-prev');
+    const nextBtn = document.getElementById('tour-next');
+    const indicator = document.getElementById('tour-step-indicator');
+
+    // Step dots
+    indicator.innerHTML = TOUR_STEPS.map((_, i) => {
+        const cls = i < tourStep ? 'tour-dot done' : i === tourStep ? 'tour-dot active' : 'tour-dot';
+        return '<div class="' + cls + '"></div>';
+    }).join('');
+
+    title.textContent = step.title;
+    body.innerHTML = step.body;
+    prevBtn.style.display = tourStep === 0 ? 'none' : '';
+    nextBtn.innerHTML = tourStep === TOUR_STEPS.length - 1 ? 'FINISH &#10003;' : 'NEXT &#8594;';
+
+    // Remove old arrow classes
+    card.classList.remove('arrow-top', 'arrow-bottom', 'arrow-left', 'arrow-right');
+
+    // Deferred measurement for accurate card height
+    requestAnimationFrame(() => {
+        const el = document.querySelector(step.target);
+        if (el && step.position !== 'center') {
+            const rect = el.getBoundingClientRect();
+            const pad = 10;
+
+            const spotProps = {
+                left: (rect.left - pad) + 'px',
+                top: (rect.top - pad) + 'px',
+                width: (rect.width + pad * 2) + 'px',
+                height: (rect.height + pad * 2) + 'px',
+                display: ''
+            };
+
+            if (typeof gsap !== 'undefined') {
+                gsap.to(spotlight, { ...spotProps, duration: 0.4, ease: 'power2.out' });
+            } else {
+                Object.assign(spotlight.style, spotProps);
+            }
+
+            const cardW = 340;
+            const cardH = card.offsetHeight || 200;
+            let cx, cy;
+            let pos = step.position;
+
+            // Calculate card position
+            if (pos === 'below') {
+                cx = rect.left + rect.width / 2 - cardW / 2;
+                cy = rect.bottom + 18;
+                if (cy + cardH > window.innerHeight - 20) { pos = 'above'; cy = rect.top - cardH - 18; }
+            } else if (pos === 'above') {
+                cx = rect.left + rect.width / 2 - cardW / 2;
+                cy = rect.top - cardH - 18;
+                if (cy < 20) { pos = 'below'; cy = rect.bottom + 18; }
+            } else if (pos === 'left') {
+                cx = rect.left - cardW - 18;
+                cy = rect.top + rect.height / 2 - cardH / 2;
+                if (cx < 20) { pos = 'right'; cx = rect.right + 18; }
+            } else if (pos === 'right') {
+                cx = rect.right + 18;
+                cy = rect.top + rect.height / 2 - cardH / 2;
+                if (cx + cardW > window.innerWidth - 20) { pos = 'left'; cx = rect.left - cardW - 18; }
+            }
+
+            cx = Math.max(16, Math.min(window.innerWidth - cardW - 16, cx));
+            cy = Math.max(16, Math.min(window.innerHeight - cardH - 16, cy));
+
+            // Arrow direction
+            if (pos === 'below') card.classList.add('arrow-top');
+            else if (pos === 'above') card.classList.add('arrow-bottom');
+            else if (pos === 'left') card.classList.add('arrow-right');
+            else if (pos === 'right') card.classList.add('arrow-left');
+
+            if (typeof gsap !== 'undefined') {
+                gsap.to(card, { left: cx, top: cy, opacity: 1, duration: 0.35, ease: 'power2.out' });
+            } else {
+                card.style.left = cx + 'px';
+                card.style.top = cy + 'px';
+            }
+        } else {
+            spotlight.style.display = 'none';
+            const cardW = 340;
+            card.style.left = (window.innerWidth / 2 - cardW / 2) + 'px';
+            card.style.top = (window.innerHeight / 2 - 120) + 'px';
+        }
+    });
+}
+
+// ESC closes tour
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && tourActive) endTour();
+});
+window.addEventListener('resize', () => {
+    if (tourActive) renderTourStep();
+});
+
+// ============================================
+// RESEARCH PANEL
+// ============================================
+window.toggleResearchPanel = function() {
+    const panel = document.getElementById('research-panel');
+    if (!panel) return;
+    const visible = panel.style.display !== 'none';
+    if (visible) {
+        if (typeof gsap !== 'undefined') {
+            gsap.to(panel, { x: 420, opacity: 0, duration: 0.3, ease: 'power2.in', onComplete: () => panel.style.display = 'none' });
+        } else {
+            panel.style.display = 'none';
+        }
+    } else {
+        panel.style.display = '';
+        if (typeof gsap !== 'undefined') {
+            gsap.fromTo(panel, { x: 420, opacity: 0 }, { x: 0, opacity: 1, duration: 0.4, ease: 'power3.out' });
+        }
+        updateScoreTimeline();
+        updateScoreStats();
+    }
+};
+
+window.switchResearchTab = function(tab) {
+    document.querySelectorAll('.rp-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    ['scores', 'tuning', 'export'].forEach(id => {
+        const el = document.getElementById('rp-tab-' + id);
+        if (el) el.style.display = id === tab ? '' : 'none';
+    });
+    if (tab === 'scores') {
+        updateScoreTimeline();
+        updateScoreStats();
+    }
+};
+
+function updateScoreTimeline() {
+    const canvas = document.getElementById('score-timeline-canvas');
+    if (!canvas || nemotronHistory.length === 0) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    // Background grid
+    ctx.strokeStyle = 'rgba(74, 158, 255, 0.08)';
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 4; i++) {
+        const y = h - (i / 4) * h;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+
+    const colors = { helpfulness: '#4a9eff', correctness: '#00d47e', coherence: '#f0ad4e', complexity: '#a855f7', verbosity: '#ff3b5c' };
+    const keys = Object.keys(colors);
+    const maxPoints = 40;
+    const data = nemotronHistory.slice(-maxPoints);
+    const step = w / Math.max(data.length - 1, 1);
+
+    for (const key of keys) {
+        ctx.strokeStyle = colors[key];
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        data.forEach((d, i) => {
+            const x = i * step;
+            const y = h - ((d[key] || 0) / 4) * h;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+    }
+}
+
+function updateScoreStats() {
+    if (nemotronHistory.length === 0) return;
+    const el = id => document.getElementById(id);
+
+    const avgs = nemotronHistory.map(h => {
+        const vals = [h.helpfulness||0, h.correctness||0, h.coherence||0, h.complexity||0, h.verbosity||0];
+        return vals.reduce((a,b) => a+b, 0) / 5;
+    });
+
+    const overall = avgs.reduce((a,b) => a+b, 0) / avgs.length;
+    const passCount = avgs.filter(a => a >= 2.0).length;
+    const best = Math.max(...avgs);
+    const worst = Math.min(...avgs);
+
+    // Trend: compare last 5 to previous 5
+    let trend = '--';
+    if (avgs.length >= 10) {
+        const recent = avgs.slice(-5).reduce((a,b) => a+b, 0) / 5;
+        const prev = avgs.slice(-10, -5).reduce((a,b) => a+b, 0) / 5;
+        const diff = recent - prev;
+        trend = (diff >= 0 ? '+' : '') + diff.toFixed(2);
+    }
+
+    if (el('rp-total-audits')) el('rp-total-audits').textContent = nemotronHistory.length;
+    if (el('rp-pass-rate')) el('rp-pass-rate').textContent = ((passCount / avgs.length) * 100).toFixed(0) + '%';
+    if (el('rp-avg-score')) el('rp-avg-score').textContent = overall.toFixed(2) + ' / 4.0';
+    if (el('rp-best-audit')) el('rp-best-audit').textContent = best.toFixed(2);
+    if (el('rp-worst-audit')) el('rp-worst-audit').textContent = worst.toFixed(2);
+    if (el('rp-trend')) el('rp-trend').textContent = trend;
+}
+
+// ============================================
+// LIVE PARAMETER TUNING
+// ============================================
+window.tuneParam = function(param, value) {
+    const v = parseFloat(value);
+    const display = document.getElementById('tune-val-' + param.replace(/([A-Z])/g, (m) => {
+        return { shadowSpeed: 'shadow', drainMultiplier: 'drain', agentInterval: 'interval', commRange: 'comm' }[param] || param;
+    }));
+
+    switch (param) {
+        case 'shadowSpeed':
+            missionConfig.shadowSpeed = v;
+            if (document.getElementById('tune-val-shadow')) document.getElementById('tune-val-shadow').textContent = v.toFixed(1);
+            addLogEntry('system', 'Shadow speed tuned to <b>' + v.toFixed(1) + '</b> m/s');
+            break;
+        case 'drainMultiplier':
+            missionConfig._drainMult = v;
+            if (document.getElementById('tune-val-drain')) document.getElementById('tune-val-drain').textContent = v.toFixed(1);
+            addLogEntry('system', 'Battery drain multiplier set to <b>' + v.toFixed(1) + 'x</b>');
+            break;
+        case 'agentInterval':
+            missionConfig._agentInterval = v;
+            if (document.getElementById('tune-val-interval')) document.getElementById('tune-val-interval').textContent = v.toFixed(0);
+            addLogEntry('system', 'Agent decision interval set to <b>' + v.toFixed(0) + 's</b>');
+            break;
+        case 'commRange':
+            missionConfig._commRangePct = v;
+            if (document.getElementById('tune-val-comm')) document.getElementById('tune-val-comm').textContent = v.toFixed(0);
+            addLogEntry('system', 'Communication range set to <b>' + v.toFixed(0) + '%</b>');
+            break;
+    }
+};
+
+// ============================================
+// EVENT INJECTION
+// ============================================
+window.injectEvent = function(type) {
+    const R = selectedCrater ? selectedCrater.diameter_km * CRATER_SCALE : 750;
+
+    switch (type) {
+        case 'shadowSurge': {
+            const oldSpeed = missionConfig.shadowSpeed;
+            missionConfig.shadowSpeed *= 3;
+            addLogEntry('danger', 'SHADOW SURGE — Shadow speed tripled to <b>' + missionConfig.shadowSpeed.toFixed(1) + '</b> m/s for 15 seconds!');
+            showToast('Shadow surge! Speed x3 for 15s', 'error', 5000);
+            setTimeout(() => {
+                missionConfig.shadowSpeed = oldSpeed;
+                addLogEntry('system', 'Shadow speed returned to <b>' + oldSpeed.toFixed(1) + '</b> m/s');
+            }, 15000);
+            break;
+        }
+        case 'batteryDrop': {
+            for (const state of Object.values(roverStates)) {
+                state.battery = Math.max(5, state.battery - 25);
+            }
+            addLogEntry('danger', 'BATTERY DROP — All rovers lost 25% battery from solar flare interference!');
+            showToast('Solar flare! All rovers -25% battery', 'error', 5000);
+            break;
+        }
+        case 'iceBonus': {
+            const x = (Math.random() - 0.3) * R * 0.6;
+            const z = (Math.random() - 0.5) * R * 0.6;
+            const dep = { x, z, richness: 0.9 + Math.random() * 0.1, discovered: false, discoveredBy: null };
+            iceDeposits.push(dep);
+            // Create marker
+            const y = craterHeight(x, z) + 0.5;
+            const geo = new THREE.OctahedronGeometry(2 + dep.richness * 3, 0);
+            const mat = new THREE.MeshStandardMaterial({
+                color: 0x00ccff, emissive: 0x0066aa, emissiveIntensity: 0.8,
+                transparent: true, opacity: 0, roughness: 0.1, metalness: 0.9
+            });
+            const marker = new THREE.Mesh(geo, mat);
+            marker.position.set(x, y + 3, z);
+            scene.add(marker);
+            dep._marker = marker;
+            const ringGeo = new THREE.RingGeometry(3, 5 + dep.richness * 4, 24);
+            ringGeo.rotateX(-Math.PI / 2);
+            const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({
+                color: 0x00ccff, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false
+            }));
+            ring.position.set(x, y + 0.5, z);
+            scene.add(ring);
+            dep._ring = ring;
+            addLogEntry('award', 'ICE BONUS — Ground-penetrating radar detected a new high-richness deposit!');
+            showToast('New ice deposit detected by radar!', 'success', 5000);
+            break;
+        }
+        case 'sensorFail': {
+            const ids = Object.keys(roverStates);
+            const targetId = ids[Math.floor(Math.random() * ids.length)];
+            if (roverStates[targetId]) {
+                roverStates[targetId].sensor_health = Math.max(0, roverStates[targetId].sensor_health - 40);
+                addLogEntry('danger', '<b>' + targetId.toUpperCase() + '</b> suffered sensor malfunction! Health dropped by 40%.');
+                showToast(targetId.toUpperCase() + ' sensor failure! -40%', 'error', 5000);
+            }
+            break;
+        }
+    }
+};
+
+// ============================================
+// DATA EXPORT UTILITIES
+// ============================================
+window.exportScoreCSV = function() {
+    if (nemotronHistory.length === 0) {
+        showToast('No audit data to export yet', 'info', 3000);
+        return;
+    }
+    const headers = 'time,helpfulness,correctness,coherence,complexity,verbosity,average\n';
+    const rows = nemotronHistory.map(h => {
+        const avg = ((h.helpfulness||0)+(h.correctness||0)+(h.coherence||0)+(h.complexity||0)+(h.verbosity||0))/5;
+        return [h.time||'', h.helpfulness||0, h.correctness||0, h.coherence||0, h.complexity||0, h.verbosity||0, avg.toFixed(3)].join(',');
+    }).join('\n');
+    const blob = new Blob([headers + rows], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'regolith-nemotron-scores-' + Date.now() + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    showToast('Nemotron scores exported as CSV', 'success', 3000);
+};
+
+window.exportNegotiationLog = function() {
+    const log = document.getElementById('negotiation-log');
+    if (!log || log.children.length === 0) {
+        showToast('No log entries to export', 'info', 3000);
+        return;
+    }
+    let text = 'PROJECT REGOLITH — NEGOTIATION LOG\n';
+    text += 'Crater: ' + (selectedCrater ? selectedCrater.name : 'unknown') + '\n';
+    text += 'Scenario: ' + (missionConfig.scenario || 'exploration') + '\n';
+    text += 'Exported: ' + new Date().toISOString() + '\n';
+    text += '='.repeat(60) + '\n\n';
+    for (const entry of log.children) {
+        const time = entry.querySelector('.log-time')?.textContent || '';
+        const type = entry.querySelector('.log-type')?.textContent || '';
+        const msg = entry.textContent.replace(time, '').replace(type, '').trim();
+        text += '[' + time + '] ' + type + ': ' + msg + '\n';
+    }
+    const blob = new Blob([text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'regolith-negotiation-log-' + Date.now() + '.txt';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    showToast('Negotiation log exported', 'success', 3000);
+};

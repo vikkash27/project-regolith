@@ -67,8 +67,8 @@
     </div>
 
     <!-- ============ MISSION BRIEF ============ -->
-    <div id="mission-brief-btn" onclick="toggleMissionBrief()">
-        <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+    <div id="mission-brief-btn" class="hud-btn" onclick="toggleMissionBrief()">
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="none">
             <rect x="2" y="2" width="16" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/>
             <line x1="6" y1="7" x2="14" y2="7" stroke="currentColor" stroke-width="1.2"/>
             <line x1="6" y1="10" x2="14" y2="10" stroke="currentColor" stroke-width="1.2"/>
@@ -156,8 +156,6 @@
                     <option value="mining">&#9935; Ice Mining Ops</option>
                     <option value="relay">&#128225; Comms Relay</option>
                     <option value="race">&#9201; Shadow Race</option>
-                    <option value="swarm_construction">&#9670; Swarm: Landing Pad (15 rovers)</option>
-                    <option value="swarm_crater">&#9670; Swarm: Crater Mission (15 rovers)</option>
                 </select>
             </label>
             <label>ROVERS <span id="config-val-numRovers">3</span>
@@ -285,89 +283,6 @@
     <!-- ============ MINIMAP ============ -->
     <div id="minimap-container">
         <canvas id="minimap-canvas" width="180" height="180"></canvas>
-    </div>
-
-    <!-- ============ NVIDIA NEMOTRON INTELLIGENCE PANEL ============ -->
-    <div id="nvidia-panel" style="display:none">
-        <div class="nv-header">
-            <div class="nv-brand">
-                <span class="nv-logo">&#9670;</span>
-                <div class="nv-brand-text">
-                    <span class="nv-title">NVIDIA NEMOTRON</span>
-                    <span class="nv-subtitle">Reward Model Intelligence</span>
-                </div>
-            </div>
-            <span class="nv-model-tag">Nemotron-3-Nano-30b</span>
-        </div>
-        <div class="nv-body">
-            <div class="nv-section-title">REAL-TIME AUDIT SCORES</div>
-            <div class="nv-scores">
-                <div class="nv-score-item" id="nv-helpfulness"><span class="nv-lbl">Helpfulness</span><div class="nv-bar"><div class="nv-bar-fill"></div></div><span class="nv-val">&mdash;</span></div>
-                <div class="nv-score-item" id="nv-correctness"><span class="nv-lbl">Correctness</span><div class="nv-bar"><div class="nv-bar-fill"></div></div><span class="nv-val">&mdash;</span></div>
-                <div class="nv-score-item" id="nv-coherence"><span class="nv-lbl">Coherence</span><div class="nv-bar"><div class="nv-bar-fill"></div></div><span class="nv-val">&mdash;</span></div>
-                <div class="nv-score-item" id="nv-complexity"><span class="nv-lbl">Complexity</span><div class="nv-bar"><div class="nv-bar-fill"></div></div><span class="nv-val">&mdash;</span></div>
-                <div class="nv-score-item" id="nv-verbosity"><span class="nv-lbl">Verbosity</span><div class="nv-bar"><div class="nv-bar-fill"></div></div><span class="nv-val">&mdash;</span></div>
-            </div>
-            <div class="nv-section-title" style="margin-top:10px">MISSION PREDICTION</div>
-            <div class="nv-predict">
-                <div class="nv-predict-row"><span>Success Likelihood</span><div class="nv-predict-bar"><div class="nv-predict-fill nv-success-bar" id="nv-success-fill"></div></div><span class="nv-predict-pct" id="nv-success-pct">&mdash;</span></div>
-                <div class="nv-predict-row"><span>Risk Index</span><div class="nv-predict-bar"><div class="nv-predict-fill nv-risk-bar" id="nv-risk-fill"></div></div><span class="nv-predict-pct" id="nv-risk-pct">&mdash;</span></div>
-            </div>
-            <div class="nv-section-title" style="margin-top:10px">FAILURE MODES</div>
-            <div class="nv-failures" id="nv-failures">
-                <div class="nv-fail-item nv-ok">&#10003; Awaiting first audit cycle</div>
-            </div>
-            <div class="nv-decisions" id="nv-total-decisions">0 decisions audited</div>
-        </div>
-    </div>
-
-    <!-- ============ MISSION GOALS WIDGET ============ -->
-    <div id="mission-goals" style="display:none">
-        <div class="mg-header">
-            <span class="mg-icon">&#9872;</span>
-            <span class="mg-title">MISSION OBJECTIVES</span>
-        </div>
-        <div class="mg-progress-bar">
-            <div class="mg-progress-fill" id="mission-progress-fill"></div>
-        </div>
-        <div class="mg-pct" id="mission-progress-pct">0%</div>
-        <div class="mg-objectives" id="mission-objectives-list"></div>
-    </div>
-
-    <!-- ============ INTERACTIVE ONBOARDING ============ -->
-    <div id="onboarding-overlay" style="display:none">
-        <div class="onb-backdrop"></div>
-        <div class="onb-content">
-            <div id="onb-step-1" class="onb-step">
-                <div class="onb-step-num">01</div>
-                <h2 class="onb-heading">Welcome to Project Regolith</h2>
-                <p class="onb-text">You are looking at the <strong>Moon's south pole</strong> &mdash; home to permanently shadowed craters containing water ice, the most valuable resource for future lunar missions.</p>
-                <p class="onb-text">Each highlighted crater is a <strong>real location</strong> mapped by NASA's Lunar Reconnaissance Orbiter.</p>
-                <div class="onb-nav">
-                    <button class="onb-skip" onclick="skipOnboarding()">SKIP</button>
-                    <button class="onb-next" onclick="advanceOnboarding(1)">NEXT &rarr;</button>
-                </div>
-            </div>
-            <div id="onb-step-2" class="onb-step" style="display:none">
-                <div class="onb-step-num">02</div>
-                <h2 class="onb-heading">Autonomous Rover Swarms</h2>
-                <p class="onb-text">Deploy up to <strong>15 AI-powered rovers</strong> into any crater. Each rover is an independent <strong>Claude AI agent</strong> that negotiates tasks using the Contract Net Protocol.</p>
-                <p class="onb-text">No human in the loop &mdash; the swarm self-organises to explore, discover ice, and survive the advancing shadow.</p>
-                <div class="onb-nav">
-                    <button class="onb-skip" onclick="skipOnboarding()">SKIP</button>
-                    <button class="onb-next" onclick="advanceOnboarding(2)">NEXT &rarr;</button>
-                </div>
-            </div>
-            <div id="onb-step-3" class="onb-step" style="display:none">
-                <div class="onb-step-num">03</div>
-                <h2 class="onb-heading">NVIDIA Nemotron Auditing</h2>
-                <p class="onb-text">Every AI decision is audited in real-time by <strong>NVIDIA Nemotron-3-Nano-30b</strong>, a reward model scoring helpfulness, correctness, coherence, complexity, and verbosity.</p>
-                <p class="onb-text"><strong>Click any crater</strong> to begin configuring your mission.</p>
-                <div class="onb-nav">
-                    <button class="onb-done" onclick="advanceOnboarding(3)">START EXPLORING &rarr;</button>
-                </div>
-            </div>
-        </div>
     </div>
 
     <!-- ============ TOAST CONTAINER ============ -->
@@ -551,6 +466,91 @@
     <div id="narrator-indicator">
         <div class="narrator-wave"><span></span><span></span><span></span><span></span><span></span></div>
         <span>NARRATOR</span>
+    </div>
+
+    <!-- ============ LANDER ANIMATION ============ -->
+    <div id="lander-animation" style="display: none;">
+        <div class="lander-letterbox lander-letterbox-top"></div>
+        <div class="lander-letterbox lander-letterbox-bottom"></div>
+        <div class="lander-scene" id="lander-scene-descent">
+            <div class="lander-stars"></div>
+            <div class="lander-surface"></div>
+            <div class="lander-craft" id="lander-craft">
+                <svg viewBox="0 0 120 160" width="120" height="160">
+                    <!-- Main body -->
+                    <rect x="30" y="40" width="60" height="50" rx="4" fill="#c0c0c0" stroke="#888" stroke-width="1.5"/>
+                    <!-- Top cone -->
+                    <polygon points="60,10 30,40 90,40" fill="#a0a0a0" stroke="#888" stroke-width="1"/>
+                    <!-- Legs -->
+                    <line x1="25" y1="90" x2="10" y2="140" stroke="#999" stroke-width="2.5"/>
+                    <line x1="95" y1="90" x2="110" y2="140" stroke="#999" stroke-width="2.5"/>
+                    <line x1="60" y1="90" x2="60" y2="145" stroke="#999" stroke-width="2"/>
+                    <!-- Foot pads -->
+                    <ellipse cx="10" cy="142" rx="8" ry="3" fill="#888"/>
+                    <ellipse cx="110" cy="142" rx="8" ry="3" fill="#888"/>
+                    <ellipse cx="60" cy="147" rx="8" ry="3" fill="#888"/>
+                    <!-- Thruster nozzle -->
+                    <rect x="45" y="90" width="30" height="8" rx="2" fill="#666"/>
+                </svg>
+                <div class="thruster-flame" id="thruster-flame">
+                    <div class="flame-core"></div>
+                    <div class="flame-outer"></div>
+                </div>
+            </div>
+            <div class="lander-dust" id="lander-dust"></div>
+            <div class="lander-status">
+                <div class="lander-status-text" id="lander-status-text">DESCENT INITIATED</div>
+                <div class="lander-altitude" id="lander-altitude">ALT: 500m</div>
+            </div>
+        </div>
+        <div class="lander-scene" id="lander-scene-deploy" style="display:none;">
+            <div class="lander-stars"></div>
+            <div class="lander-surface lander-surface-close"></div>
+            <div class="deploy-lander">
+                <svg viewBox="0 0 120 160" width="80" height="106">
+                    <rect x="30" y="40" width="60" height="50" rx="4" fill="#c0c0c0" stroke="#888" stroke-width="1.5"/>
+                    <polygon points="60,10 30,40 90,40" fill="#a0a0a0" stroke="#888" stroke-width="1"/>
+                    <line x1="25" y1="90" x2="10" y2="140" stroke="#999" stroke-width="2.5"/>
+                    <line x1="95" y1="90" x2="110" y2="140" stroke="#999" stroke-width="2.5"/>
+                    <line x1="60" y1="90" x2="60" y2="145" stroke="#999" stroke-width="2"/>
+                    <ellipse cx="10" cy="142" rx="8" ry="3" fill="#888"/>
+                    <ellipse cx="110" cy="142" rx="8" ry="3" fill="#888"/>
+                    <ellipse cx="60" cy="147" rx="8" ry="3" fill="#888"/>
+                    <rect x="45" y="90" width="30" height="8" rx="2" fill="#666"/>
+                    <!-- Ramp -->
+                    <line x1="90" y1="85" x2="130" y2="140" stroke="#aaa" stroke-width="2"/>
+                </svg>
+            </div>
+            <div class="deploy-rovers" id="deploy-rovers">
+                <div class="deploy-rover deploy-rover-1">
+                    <svg viewBox="0 0 40 24" width="40" height="24">
+                        <rect x="5" y="4" width="30" height="12" rx="3" fill="#ff6b6b" stroke="#c44" stroke-width="1"/>
+                        <circle cx="10" cy="20" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+                        <circle cx="30" cy="20" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+                        <rect x="14" y="2" width="12" height="3" rx="1" fill="#ddd"/>
+                    </svg>
+                </div>
+                <div class="deploy-rover deploy-rover-2">
+                    <svg viewBox="0 0 40 24" width="40" height="24">
+                        <rect x="5" y="4" width="30" height="12" rx="3" fill="#4ecdc4" stroke="#2a9" stroke-width="1"/>
+                        <circle cx="10" cy="20" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+                        <circle cx="30" cy="20" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+                        <rect x="14" y="2" width="12" height="3" rx="1" fill="#ddd"/>
+                    </svg>
+                </div>
+                <div class="deploy-rover deploy-rover-3">
+                    <svg viewBox="0 0 40 24" width="40" height="24">
+                        <rect x="5" y="4" width="30" height="12" rx="3" fill="#ffd93d" stroke="#cc0" stroke-width="1"/>
+                        <circle cx="10" cy="20" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+                        <circle cx="30" cy="20" r="4" fill="#333" stroke="#555" stroke-width="0.5"/>
+                        <rect x="14" y="2" width="12" height="3" rx="1" fill="#ddd"/>
+                    </svg>
+                </div>
+            </div>
+            <div class="lander-status">
+                <div class="lander-status-text" id="deploy-status-text">DEPLOYING ROVERS</div>
+            </div>
+        </div>
     </div>
 
     <!-- ============ THREE.JS ============ -->
