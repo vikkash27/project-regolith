@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Regolith &mdash; Autonomous Lunar Swarm Coordination</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- ============ LOADING SCREEN ============ -->
+    <div id="loading-indicator">
+        <canvas id="loading-canvas"></canvas>
+        <div id="loading-scanlines"></div>
+        <div id="loading-content">
+            <div id="loading-header">
+                <div id="loading-classification">UNCLASSIFIED // FOUO</div>
+                <div id="loading-system">LUNAR RECONNAISSANCE ORBITAL DATA SYSTEM</div>
+            </div>
+            <div id="loading-logo">
+                <svg width="120" height="120" viewBox="0 0 120 120">
+                    <circle cx="60" cy="60" r="54" fill="none" stroke="#4a9eff" stroke-width="0.5" opacity="0.15" stroke-dasharray="4 4">
+                        <animateTransform attributeName="transform" type="rotate" from="0 60 60" to="-360 60 60" dur="30s" repeatCount="indefinite"/>
+                    </circle>
+                    <circle cx="60" cy="60" r="44" fill="none" stroke="#4a9eff" stroke-width="0.8" opacity="0.25"/>
+                    <circle cx="60" cy="60" r="34" fill="none" stroke="#4a9eff" stroke-width="0.5" opacity="0.15" stroke-dasharray="2 6">
+                        <animateTransform attributeName="transform" type="rotate" from="0 60 60" to="360 60 60" dur="20s" repeatCount="indefinite"/>
+                    </circle>
+                    <circle cx="60" cy="60" r="24" fill="none" stroke="#4a9eff" stroke-width="1" opacity="0.35"/>
+                    <circle cx="60" cy="60" r="5" fill="#4a9eff" opacity="0.9"/>
+                    <circle cx="60" cy="60" r="8" fill="none" stroke="#4a9eff" stroke-width="0.5" opacity="0.5"/>
+                    <line x1="60" y1="6" x2="60" y2="22" stroke="#4a9eff" stroke-width="0.8" opacity="0.4"/>
+                    <line x1="60" y1="98" x2="60" y2="114" stroke="#4a9eff" stroke-width="0.8" opacity="0.4"/>
+                    <line x1="6" y1="60" x2="22" y2="60" stroke="#4a9eff" stroke-width="0.8" opacity="0.4"/>
+                    <line x1="98" y1="60" x2="114" y2="60" stroke="#4a9eff" stroke-width="0.8" opacity="0.4"/>
+                    <circle cx="60" cy="6" r="2" fill="#4a9eff" opacity="0.7">
+                        <animateTransform attributeName="transform" type="rotate" from="0 60 60" to="360 60 60" dur="4s" repeatCount="indefinite"/>
+                    </circle>
+                    <circle cx="6" cy="60" r="1.5" fill="#00d47e" opacity="0.5">
+                        <animateTransform attributeName="transform" type="rotate" from="0 60 60" to="-360 60 60" dur="7s" repeatCount="indefinite"/>
+                    </circle>
+                </svg>
+            </div>
+            <div id="loading-title">PROJECT REGOLITH</div>
+            <div id="loading-subtitle">AUTONOMOUS SWARM COORDINATION SYSTEM</div>
+            <div id="loading-progress">
+                <div id="loading-bar"><div id="loading-bar-fill"></div></div>
+                <div id="loading-pct">0%</div>
+            </div>
+            <div id="loading-stages">
+                <div class="loading-stage active" data-stage="0">Establishing uplink...</div>
+                <div class="loading-stage" data-stage="1">Downloading LRO topology data...</div>
+                <div class="loading-stage" data-stage="2">Initializing terrain shaders...</div>
+                <div class="loading-stage" data-stage="3">Calibrating sensor arrays...</div>
+                <div class="loading-stage" data-stage="4">Systems nominal.</div>
+            </div>
+            <div id="loading-stats">
+                <span>LRO 8K TOPO</span><span class="loading-stat-div">|</span><span>SOUTH POLE OPS</span><span class="loading-stat-div">|</span><span>v3.0.0</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ ORBIT INSTRUCTION ============ -->
+    <div id="orbit-instruction" style="display: none;">
+        <div class="instruction-icon">&#9678;</div>
+        <div class="instruction-text">SELECT A CRATER TO BEGIN</div>
+        <div class="instruction-sub">Click any highlighted crater on the lunar south pole</div>
+    </div>
+
+    <!-- ============ MISSION BRIEF ============ -->
+    <div id="mission-brief-btn" onclick="toggleMissionBrief()">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+            <rect x="2" y="2" width="16" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="6" y1="7" x2="14" y2="7" stroke="currentColor" stroke-width="1.2"/>
+            <line x1="6" y1="10" x2="14" y2="10" stroke="currentColor" stroke-width="1.2"/>
+            <line x1="6" y1="13" x2="11" y2="13" stroke="currentColor" stroke-width="1.2"/>
+        </svg>
+        <span>BRIEF</span>
+    </div>
+    <div id="mission-brief-panel">
+        <div class="brief-header">
+            <h2>MISSION BRIEFING</h2>
+            <button class="brief-close" onclick="toggleMissionBrief()">&times;</button>
+        </div>
+        <div class="brief-content">
+            <div class="brief-section">
+                <h4>WHAT IS THIS?</h4>
+                <p>Project Regolith is a real-time simulation of <b>autonomous lunar rover swarms</b> operating in permanently shadowed craters at the Moon's south pole. Each rover is powered by a separate <b>Claude AI agent</b> that makes independent decisions — no human in the loop.</p>
+            </div>
+            <div class="brief-section">
+                <h4>WHY DOES IT MATTER?</h4>
+                <p>Earth-to-Moon latency is <b>1.3 seconds one-way</b>. A centralized mission controller is a single point of failure. This simulation demonstrates that swarms can <b>self-organize, negotiate, and survive</b> without ground control using economic task allocation.</p>
+            </div>
+            <div class="brief-section">
+                <h4>HOW DO THE ROVERS THINK?</h4>
+                <p>Each rover uses the <b>Contract Net Protocol</b> (Smith, 1980):</p>
+                <div class="brief-flow">
+                    <div class="bf-step"><span class="bf-num">1</span><span>Rover in danger broadcasts a <b>Call for Proposals</b></span></div>
+                    <div class="bf-step"><span class="bf-num">2</span><span>Other rovers calculate a utility score and submit <b>Bids</b></span></div>
+                    <div class="bf-step"><span class="bf-num">3</span><span>Best bidder wins the <b>Contract</b> and executes the task</span></div>
+                    <div class="bf-step"><span class="bf-num">4</span><span>NVIDIA Nemotron <b>audits</b> every decision in real-time</span></div>
+                </div>
+                <p class="brief-formula">U = (w₁ × battery) − (w₂ × distance) + (w₃ × capability × 100)</p>
+            </div>
+            <div class="brief-section">
+                <h4>THE SHADOW THREAT</h4>
+                <p>A lethal <b>shadow boundary</b> advances across the crater floor. Rovers caught in shadow lose battery at <b>5× the normal rate</b> and suffer sensor degradation from thermal cycling. The swarm must explore, discover ice deposits, and evacuate before the shadow overtakes them.</p>
+            </div>
+            <div class="brief-section">
+                <h4>RESEARCH VALUE</h4>
+                <p>This platform enables researchers to study:</p>
+                <ul class="brief-list">
+                    <li>Multi-agent negotiation under time pressure</li>
+                    <li>Decentralized vs. centralized swarm trade-offs</li>
+                    <li>AI decision quality degradation under resource constraints</li>
+                    <li>Reward model alignment (Nemotron auditing Claude)</li>
+                </ul>
+                <p>Use the <b>Research Panel</b> (&#128202; button) during simulation to tune parameters live, view score trends, and export data for analysis.</p>
+            </div>
+            <div class="brief-section">
+                <h4>SIMULATION PHYSICS</h4>
+                <p>Semi-implicit Euler integration at 30 Hz. Lunar gravity 1.625 m/s². Regolith friction model (37° angle of repose). Battery drain 0.05%/s normal, 5× in shadow. Sensor damage 0.3%/s from thermal cycling in shadow.</p>
+            </div>
+            <div class="brief-section">
+                <h4>REFERENCES</h4>
+                <ul class="brief-refs">
+                    <li>Smith, R.G. (1980) &mdash; The Contract Net Protocol</li>
+                    <li>Mazarico et al. (2011) &mdash; Illumination conditions, lunar polar regions</li>
+                    <li>Cort&eacute;s et al. (2004) &mdash; Coverage control for mobile sensing networks</li>
+                    <li>Khatib (1986) &mdash; Real-time obstacle avoidance using potential fields</li>
+                    <li>Olfati-Saber (2006) &mdash; Flocking for multi-agent dynamic systems</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ CONFIG PANEL ============ -->
+    <div id="config-panel">
+        <h3>MISSION CONFIGURATION</h3>
+        <div class="config-crater-info">
+            <div id="config-crater-name" class="crater-name"></div>
+            <div id="config-crater-desc" class="crater-desc"></div>
+            <div class="crater-stats">
+                <div class="cr-stat"><span>DIAMETER</span><span id="config-crater-diameter">&mdash;</span></div>
+                <div class="cr-stat"><span>DEPTH</span><span id="config-crater-depth">&mdash;</span></div>
+                <div class="cr-stat"><span>DIFFICULTY</span><span id="config-crater-difficulty">&mdash;</span></div>
+                <div class="cr-stat"><span>SCIENCE VALUE</span><span id="config-crater-science">&mdash;</span></div>
+            </div>
+            <ul id="config-crater-features" class="crater-features"></ul>
+            <button class="btn-info" onclick="showEduPanel()">&#9432; CRATER HISTORY &amp; SCIENCE</button>
+        </div>
+        <div class="config-sliders">
+            <label>MISSION SCENARIO
+                <select id="select-scenario" onchange="updateConfig('scenario', this.value)">
+                    <option value="exploration" selected>&#127761; Ice Exploration</option>
+                    <option value="rescue">&#128680; Emergency Rescue</option>
+                    <option value="mining">&#9935; Ice Mining Ops</option>
+                    <option value="relay">&#128225; Comms Relay</option>
+                    <option value="race">&#9201; Shadow Race</option>
+                    <option value="swarm_construction">&#9670; Swarm: Landing Pad (15 rovers)</option>
+                    <option value="swarm_crater">&#9670; Swarm: Crater Mission (15 rovers)</option>
+                </select>
+            </label>
+            <label>ROVERS <span id="config-val-numRovers">3</span>
+                <input type="range" id="slider-numRovers" min="1" max="5" value="3" step="1" oninput="updateConfig('numRovers', this.value)">
+            </label>
+            <label>SHADOW SPEED <span id="config-val-shadowSpeed">3.0</span> m/s
+                <input type="range" id="slider-shadowSpeed" min="0.5" max="10" value="3" step="0.5" oninput="updateConfig('shadowSpeed', this.value)">
+            </label>
+            <label>DURATION <span id="config-val-missionDuration">300</span>s
+                <input type="range" id="slider-missionDuration" min="60" max="900" value="300" step="30" oninput="updateConfig('missionDuration', this.value)">
+            </label>
+            <label>BATTERY <span id="config-val-initialBattery">100</span>%
+                <input type="range" id="slider-initialBattery" min="20" max="100" value="100" step="5" oninput="updateConfig('initialBattery', this.value)">
+            </label>
+        </div>
+        <div class="config-buttons">
+            <button class="btn-deploy" onclick="launchMission()">&#9654; DEPLOY SWARM</button>
+            <button class="btn-cancel" onclick="cancelConfig()">&#10005; CANCEL</button>
+        </div>
+    </div>
+
+    <!-- ============ EDUCATIONAL INFO PANEL ============ -->
+    <div id="edu-panel" style="display: none;">
+        <div class="edu-backdrop" onclick="closeEduPanel()"></div>
+        <div class="edu-card">
+            <div class="edu-header">
+                <div class="edu-crater-name" id="edu-crater-name"></div>
+                <div class="edu-tabs">
+                    <button class="edu-tab active" data-tab="timeline" onclick="switchEduTab('timeline')">MISSION TIMELINE</button>
+                    <button class="edu-tab" data-tab="discoveries" onclick="switchEduTab('discoveries')">DISCOVERIES</button>
+                    <button class="edu-tab" data-tab="context" onclick="switchEduTab('context')">LUNAR CONTEXT</button>
+                </div>
+                <button class="edu-close" onclick="closeEduPanel()">&times;</button>
+            </div>
+            <div class="edu-body">
+                <div id="edu-tab-timeline" class="edu-tab-content"></div>
+                <div id="edu-tab-discoveries" class="edu-tab-content" style="display:none"></div>
+                <div id="edu-tab-context" class="edu-tab-content" style="display:none"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ SIMULATION CONTROL BAR ============ -->
+    <div id="sim-controls" style="display: none;">
+        <button class="sc-back" onclick="backToMap()">&larr;</button>
+        <div class="sc-divider"></div>
+        <div id="view-tabs">
+            <button class="view-tab active" data-view="orbit" onclick="switchView('orbit')">ORBIT</button>
+        </div>
+        <div class="sc-divider"></div>
+        <div class="sc-speed">
+            <button class="speed-btn active" id="speed-1x" onclick="setSimSpeed(1)">1&times;</button>
+            <button class="speed-btn" id="speed-2x" onclick="setSimSpeed(2)">2&times;</button>
+            <button class="speed-btn" id="speed-5x" onclick="setSimSpeed(5)">5&times;</button>
+            <button class="speed-btn" id="speed-10x" onclick="setSimSpeed(10)">10&times;</button>
+        </div>
+        <div class="sc-divider"></div>
+        <div class="sc-tools">
+            <button class="tool-btn" id="heatmap-btn" onclick="toggleHeatmap()" title="Science heatmap [H]">THERMAL</button>
+            <button class="tool-btn" id="narrator-btn" onclick="toggleNarrator()" title="AI Narrator [N]">VOICE</button>
+            <button class="tool-btn" id="research-btn" onclick="toggleResearchPanel()" title="Research panel">&#128202; DATA</button>
+            <button class="tool-btn" id="explore-btn" onclick="toggleExploreMode()">EXPLORE</button>
+            <button class="tool-btn" id="tour-btn" onclick="startTour()">? GUIDE</button>
+        </div>
+        <div class="sc-spacer"></div>
+        <button class="sc-end" onclick="endMission()">END MISSION</button>
+    </div>
+
+    <!-- ============ HUD OVERLAY ============ -->
+    <div id="hud">
+        <!-- Top Bar -->
+        <div id="top-bar">
+            <div class="tb-left">
+                <span id="mission-title">PROJECT REGOLITH</span>
+                <span id="mission-scenario-badge"></span>
+            </div>
+            <div class="tb-center">
+                <span id="mission-clock">T+ 00:00:00</span>
+            </div>
+            <div class="tb-right">
+                <span id="mission-status" class="status-idle">AWAITING LAUNCH</span>
+            </div>
+        </div>
+
+        <!-- Rover Status Strip -->
+        <div id="rover-strip" style="display:none">
+            <div id="rover-cards"></div>
+        </div>
+
+        <!-- Side Panel: Mission Log -->
+        <div id="side-panel" style="display:none">
+            <div class="sp-toggle" onclick="toggleSidePanel()">
+                <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 3h8M2 6h8M2 9h5" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+                <span>LOG</span>
+            </div>
+            <div class="sp-body" id="sp-body">
+                <div id="negotiation-log"></div>
+            </div>
+        </div>
+
+        <!-- Bottom Telemetry Bar -->
+        <div id="bottom-bar" style="display:none">
+            <!-- Nemotron Scores -->
+            <div class="bb-nemotron">
+                <span class="nvidia-badge has-tip" data-tip="Scores from NVIDIA Nemotron-3 Nano reward model. Each dimension is scored 0–4 per audit cycle.">NVIDIA</span>
+                <div class="bb-scores">
+                    <div class="score-item has-tip" id="gauge-helpfulness" data-tip="HELPFULNESS — Was the swarm's decision optimal for mission success? Scored 0–4 by NVIDIA Nemotron reward model."><span class="score-val">&mdash;</span><span class="score-lbl">HELP</span></div>
+                    <div class="score-item has-tip" id="gauge-correctness" data-tip="CORRECTNESS — Was the utility calculation and bid evaluation logically sound? Scored 0–4."><span class="score-val">&mdash;</span><span class="score-lbl">CORR</span></div>
+                    <div class="score-item has-tip" id="gauge-coherence" data-tip="COHERENCE — Did the negotiation flow make sense given the current shadow/battery situation? Scored 0–4."><span class="score-val">&mdash;</span><span class="score-lbl">COHR</span></div>
+                    <div class="score-item has-tip" id="gauge-complexity" data-tip="COMPLEXITY — How sophisticated was the multi-agent coordination strategy? Scored 0–4."><span class="score-val">&mdash;</span><span class="score-lbl">CPLX</span></div>
+                    <div class="score-item has-tip" id="gauge-verbosity" data-tip="VERBOSITY — Was communication appropriately concise? Higher = more concise. Scored 0–4."><span class="score-val">&mdash;</span><span class="score-lbl">VERB</span></div>
+                </div>
+            </div>
+            <div class="bb-div"></div>
+            <!-- Mission Metrics -->
+            <div class="bb-metrics">
+                <div class="metric has-tip" data-tip="COVERAGE — Percentage of the crater floor explored by all rovers combined."><span class="metric-val" id="stat-coverage">0.0%</span><span class="metric-lbl">COV</span></div>
+                <div class="metric has-tip" data-tip="DISTANCE — Total distance traveled by all rovers in meters."><span class="metric-val" id="stat-distance">0 m</span><span class="metric-lbl">DIST</span></div>
+                <div class="metric has-tip" data-tip="ICE — Number of ice deposits discovered out of total deposits in the crater."><span class="metric-val" id="stat-ice">0/0</span><span class="metric-lbl">ICE</span></div>
+                <div class="metric has-tip" data-tip="BATTERY — Average battery level across all active rovers."><span class="metric-val" id="stat-avg-battery">100%</span><span class="metric-lbl">BATT</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ MINIMAP ============ -->
+    <div id="minimap-container">
+        <canvas id="minimap-canvas" width="180" height="180"></canvas>
+    </div>
+
+    <!-- ============ NVIDIA NEMOTRON INTELLIGENCE PANEL ============ -->
+    <div id="nvidia-panel" style="display:none">
+        <div class="nv-header">
+            <div class="nv-brand">
+                <span class="nv-logo">&#9670;</span>
+                <div class="nv-brand-text">
+                    <span class="nv-title">NVIDIA NEMOTRON</span>
+                    <span class="nv-subtitle">Reward Model Intelligence</span>
+                </div>
+            </div>
+            <span class="nv-model-tag">Nemotron-3-Nano-30b</span>
+        </div>
+        <div class="nv-body">
+            <div class="nv-section-title">REAL-TIME AUDIT SCORES</div>
+            <div class="nv-scores">
+                <div class="nv-score-item" id="nv-helpfulness"><span class="nv-lbl">Helpfulness</span><div class="nv-bar"><div class="nv-bar-fill"></div></div><span class="nv-val">&mdash;</span></div>
+                <div class="nv-score-item" id="nv-correctness"><span class="nv-lbl">Correctness</span><div class="nv-bar"><div class="nv-bar-fill"></div></div><span class="nv-val">&mdash;</span></div>
+                <div class="nv-score-item" id="nv-coherence"><span class="nv-lbl">Coherence</span><div class="nv-bar"><div class="nv-bar-fill"></div></div><span class="nv-val">&mdash;</span></div>
+                <div class="nv-score-item" id="nv-complexity"><span class="nv-lbl">Complexity</span><div class="nv-bar"><div class="nv-bar-fill"></div></div><span class="nv-val">&mdash;</span></div>
+                <div class="nv-score-item" id="nv-verbosity"><span class="nv-lbl">Verbosity</span><div class="nv-bar"><div class="nv-bar-fill"></div></div><span class="nv-val">&mdash;</span></div>
+            </div>
+            <div class="nv-section-title" style="margin-top:10px">MISSION PREDICTION</div>
+            <div class="nv-predict">
+                <div class="nv-predict-row"><span>Success Likelihood</span><div class="nv-predict-bar"><div class="nv-predict-fill nv-success-bar" id="nv-success-fill"></div></div><span class="nv-predict-pct" id="nv-success-pct">&mdash;</span></div>
+                <div class="nv-predict-row"><span>Risk Index</span><div class="nv-predict-bar"><div class="nv-predict-fill nv-risk-bar" id="nv-risk-fill"></div></div><span class="nv-predict-pct" id="nv-risk-pct">&mdash;</span></div>
+            </div>
+            <div class="nv-section-title" style="margin-top:10px">FAILURE MODES</div>
+            <div class="nv-failures" id="nv-failures">
+                <div class="nv-fail-item nv-ok">&#10003; Awaiting first audit cycle</div>
+            </div>
+            <div class="nv-decisions" id="nv-total-decisions">0 decisions audited</div>
+        </div>
+    </div>
+
+    <!-- ============ MISSION GOALS WIDGET ============ -->
+    <div id="mission-goals" style="display:none">
+        <div class="mg-header">
+            <span class="mg-icon">&#9872;</span>
+            <span class="mg-title">MISSION OBJECTIVES</span>
+        </div>
+        <div class="mg-progress-bar">
+            <div class="mg-progress-fill" id="mission-progress-fill"></div>
+        </div>
+        <div class="mg-pct" id="mission-progress-pct">0%</div>
+        <div class="mg-objectives" id="mission-objectives-list"></div>
+    </div>
+
+    <!-- ============ INTERACTIVE ONBOARDING ============ -->
+    <div id="onboarding-overlay" style="display:none">
+        <div class="onb-backdrop"></div>
+        <div class="onb-content">
+            <div id="onb-step-1" class="onb-step">
+                <div class="onb-step-num">01</div>
+                <h2 class="onb-heading">Welcome to Project Regolith</h2>
+                <p class="onb-text">You are looking at the <strong>Moon's south pole</strong> &mdash; home to permanently shadowed craters containing water ice, the most valuable resource for future lunar missions.</p>
+                <p class="onb-text">Each highlighted crater is a <strong>real location</strong> mapped by NASA's Lunar Reconnaissance Orbiter.</p>
+                <div class="onb-nav">
+                    <button class="onb-skip" onclick="skipOnboarding()">SKIP</button>
+                    <button class="onb-next" onclick="advanceOnboarding(1)">NEXT &rarr;</button>
+                </div>
+            </div>
+            <div id="onb-step-2" class="onb-step" style="display:none">
+                <div class="onb-step-num">02</div>
+                <h2 class="onb-heading">Autonomous Rover Swarms</h2>
+                <p class="onb-text">Deploy up to <strong>15 AI-powered rovers</strong> into any crater. Each rover is an independent <strong>Claude AI agent</strong> that negotiates tasks using the Contract Net Protocol.</p>
+                <p class="onb-text">No human in the loop &mdash; the swarm self-organises to explore, discover ice, and survive the advancing shadow.</p>
+                <div class="onb-nav">
+                    <button class="onb-skip" onclick="skipOnboarding()">SKIP</button>
+                    <button class="onb-next" onclick="advanceOnboarding(2)">NEXT &rarr;</button>
+                </div>
+            </div>
+            <div id="onb-step-3" class="onb-step" style="display:none">
+                <div class="onb-step-num">03</div>
+                <h2 class="onb-heading">NVIDIA Nemotron Auditing</h2>
+                <p class="onb-text">Every AI decision is audited in real-time by <strong>NVIDIA Nemotron-3-Nano-30b</strong>, a reward model scoring helpfulness, correctness, coherence, complexity, and verbosity.</p>
+                <p class="onb-text"><strong>Click any crater</strong> to begin configuring your mission.</p>
+                <div class="onb-nav">
+                    <button class="onb-done" onclick="advanceOnboarding(3)">START EXPLORING &rarr;</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ TOAST CONTAINER ============ -->
+    <div id="toast-container"></div>
+
+    <!-- ============ POV HUD ============ -->
+    <div id="pov-hud" style="display: none;">
+        <div class="pov-bar">
+            <span class="pov-label">POV</span>
+            <span class="pov-name" id="pov-rover-name">&mdash;</span>
+            <div class="pov-stats">
+                <div class="pov-s"><span class="pov-k">BAT</span><span id="pov-battery">&mdash;</span></div>
+                <div class="pov-s"><span class="pov-k">SEN</span><span id="pov-sensors">&mdash;</span></div>
+                <div class="pov-s"><span class="pov-k">SPD</span><span id="pov-speed">&mdash;</span></div>
+                <div class="pov-s"><span class="pov-k">POS</span><span id="pov-position">&mdash;</span></div>
+                <div class="pov-s"><span class="pov-k">TASK</span><span id="pov-task">&mdash;</span></div>
+                <div class="pov-s"><span class="pov-k">SHADOW</span><span id="pov-shadow">&mdash;</span></div>
+            </div>
+            <button class="pov-exit" onclick="exitPOV()">ESC</button>
+        </div>
+        <div class="pov-crosshair">
+            <svg width="40" height="40" viewBox="0 0 40 40">
+                <circle cx="20" cy="20" r="14" fill="none" stroke="rgba(74,158,255,0.15)" stroke-width="0.5"/>
+                <line x1="20" y1="4" x2="20" y2="10" stroke="rgba(74,158,255,0.2)" stroke-width="0.5"/>
+                <line x1="20" y1="30" x2="20" y2="36" stroke="rgba(74,158,255,0.2)" stroke-width="0.5"/>
+                <line x1="4" y1="20" x2="10" y2="20" stroke="rgba(74,158,255,0.2)" stroke-width="0.5"/>
+                <line x1="30" y1="20" x2="36" y2="20" stroke="rgba(74,158,255,0.2)" stroke-width="0.5"/>
+                <circle cx="20" cy="20" r="1" fill="rgba(74,158,255,0.3)"/>
+            </svg>
+        </div>
+    </div>
+
+    <!-- ============ EXPLORE HUD ============ -->
+    <div id="explore-hud" style="display: none;">
+        <div class="explore-bar">
+            <span class="explore-label">CRATER EXPLORATION</span>
+            <div class="explore-stats">
+                <div class="explore-s"><span class="explore-k">SPD</span><span id="explore-speed">0.0 m/s</span></div>
+                <div class="explore-s"><span class="explore-k">POS</span><span id="explore-pos">(0, 0)</span></div>
+                <div class="explore-s"><span class="explore-k">BAT</span><span id="explore-battery">100%</span></div>
+                <div class="explore-s"><span class="explore-k">SLOPE</span><span id="explore-slope">0°</span></div>
+                <div class="explore-s"><span class="explore-k">ALT</span><span id="explore-alt">0 m</span></div>
+            </div>
+            <button class="explore-exit" onclick="toggleExploreMode()">ESC EXIT</button>
+        </div>
+        <div class="explore-controls-hint">
+            <span class="tour-key">W</span><span class="tour-key">S</span> Throttle &nbsp;&nbsp;
+            <span class="tour-key">A</span><span class="tour-key">D</span> Steer &nbsp;&nbsp;
+            <span class="tour-key">ESC</span> Exit
+        </div>
+    </div>
+
+    <!-- ============ POST-MISSION SUMMARY ============ -->
+    <div id="post-mission" style="display: none;">
+        <div class="pm-backdrop"></div>
+        <div class="pm-card">
+            <div class="pm-header">
+                <div class="pm-badge">MISSION COMPLETE</div>
+                <div class="pm-crater" id="pm-crater-name"></div>
+                <div class="pm-scenario" id="pm-scenario-name"></div>
+            </div>
+            <div class="pm-grid">
+                <div class="pm-stat"><span class="pm-val" id="pm-coverage">&mdash;</span><span class="pm-lbl">COVERAGE</span></div>
+                <div class="pm-stat"><span class="pm-val" id="pm-distance">&mdash;</span><span class="pm-lbl">TOTAL DISTANCE</span></div>
+                <div class="pm-stat"><span class="pm-val" id="pm-ice">&mdash;</span><span class="pm-lbl">ICE DISCOVERED</span></div>
+                <div class="pm-stat"><span class="pm-val" id="pm-avg-nemotron">&mdash;</span><span class="pm-lbl">AVG NEMOTRON</span></div>
+                <div class="pm-stat"><span class="pm-val" id="pm-duration">&mdash;</span><span class="pm-lbl">ELAPSED TIME</span></div>
+                <div class="pm-stat"><span class="pm-val" id="pm-decisions">&mdash;</span><span class="pm-lbl">AI DECISIONS</span></div>
+            </div>
+            <div class="pm-section-title">ROVER PERFORMANCE</div>
+            <div class="pm-rover-grid" id="pm-rover-grid"></div>
+            <div class="pm-section-title">NEMOTRON AUDIT TREND</div>
+            <div class="pm-chart" id="pm-nemotron-chart"></div>
+            <div class="pm-actions">
+                <button class="pm-btn pm-primary" onclick="downloadMissionReport()">&#8595; EXPORT JSON</button>
+                <button class="pm-btn pm-secondary" onclick="backToMap()">NEW MISSION</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ RESEARCH PANEL (DATA DRAWER) ============ -->
+    <div id="research-panel" style="display:none">
+        <div class="rp-header">
+            <span class="rp-title">RESEARCH CONSOLE</span>
+            <button class="rp-close" onclick="toggleResearchPanel()">&times;</button>
+        </div>
+        <div class="rp-tabs">
+            <button class="rp-tab active" data-tab="scores" onclick="switchResearchTab('scores')">LIVE SCORES</button>
+            <button class="rp-tab" data-tab="tuning" onclick="switchResearchTab('tuning')">TUNING</button>
+            <button class="rp-tab" data-tab="export" onclick="switchResearchTab('export')">EXPORT</button>
+        </div>
+
+        <!-- LIVE SCORES TAB -->
+        <div class="rp-body" id="rp-tab-scores">
+            <div class="rp-section-title">NEMOTRON SCORE TIMELINE</div>
+            <canvas id="score-timeline-canvas" width="380" height="160"></canvas>
+            <div class="rp-legend" id="score-legend">
+                <span class="rp-leg" style="color:#4a9eff">&#9632; HELP</span>
+                <span class="rp-leg" style="color:#00d47e">&#9632; CORR</span>
+                <span class="rp-leg" style="color:#f0ad4e">&#9632; COHR</span>
+                <span class="rp-leg" style="color:#a855f7">&#9632; CPLX</span>
+                <span class="rp-leg" style="color:#ff3b5c">&#9632; VERB</span>
+            </div>
+            <div class="rp-section-title" style="margin-top:12px">SCORE STATISTICS</div>
+            <div class="rp-stats" id="rp-score-stats">
+                <div class="rp-stat-row"><span>Total Audits</span><span id="rp-total-audits">0</span></div>
+                <div class="rp-stat-row"><span>Pass Rate</span><span id="rp-pass-rate">&mdash;</span></div>
+                <div class="rp-stat-row"><span>Avg Score</span><span id="rp-avg-score">&mdash;</span></div>
+                <div class="rp-stat-row"><span>Best Audit</span><span id="rp-best-audit">&mdash;</span></div>
+                <div class="rp-stat-row"><span>Worst Audit</span><span id="rp-worst-audit">&mdash;</span></div>
+                <div class="rp-stat-row"><span>Score Trend</span><span id="rp-trend">&mdash;</span></div>
+            </div>
+        </div>
+
+        <!-- TUNING TAB -->
+        <div class="rp-body" id="rp-tab-tuning" style="display:none">
+            <div class="rp-section-title">LIVE PARAMETER ADJUSTMENT</div>
+            <p class="rp-hint">Modify simulation parameters in real-time. Changes take effect immediately &mdash; useful for A/B testing swarm behaviour under different conditions.</p>
+            <div class="rp-tuner">
+                <label class="rp-tune-label">SHADOW SPEED <span id="tune-val-shadow">3.0</span> m/s
+                    <input type="range" class="rp-slider" id="tune-shadow" min="0" max="15" value="3" step="0.5" oninput="tuneParam('shadowSpeed', this.value)">
+                </label>
+                <label class="rp-tune-label">BATTERY DRAIN <span id="tune-val-drain">1.0</span>x
+                    <input type="range" class="rp-slider" id="tune-drain" min="0" max="5" value="1" step="0.1" oninput="tuneParam('drainMultiplier', this.value)">
+                </label>
+                <label class="rp-tune-label">AGENT INTERVAL <span id="tune-val-interval">25</span>s
+                    <input type="range" class="rp-slider" id="tune-interval" min="5" max="60" value="25" step="1" oninput="tuneParam('agentInterval', this.value)">
+                </label>
+                <label class="rp-tune-label">COMM RANGE <span id="tune-val-comm">70</span>%
+                    <input type="range" class="rp-slider" id="tune-comm" min="10" max="100" value="70" step="5" oninput="tuneParam('commRange', this.value)">
+                </label>
+            </div>
+            <div class="rp-section-title" style="margin-top:12px">INJECT EVENTS</div>
+            <div class="rp-inject">
+                <button class="rp-inject-btn" onclick="injectEvent('shadowSurge')">&#9889; SHADOW SURGE</button>
+                <button class="rp-inject-btn" onclick="injectEvent('batteryDrop')">&#128267; BATTERY DROP</button>
+                <button class="rp-inject-btn" onclick="injectEvent('iceBonus')">&#10052; ICE BONUS</button>
+                <button class="rp-inject-btn" onclick="injectEvent('sensorFail')">&#128308; SENSOR FAIL</button>
+            </div>
+        </div>
+
+        <!-- EXPORT TAB -->
+        <div class="rp-body" id="rp-tab-export" style="display:none">
+            <div class="rp-section-title">DATA EXPORT</div>
+            <p class="rp-hint">Download mission data for offline analysis. All formats include timestamped Nemotron scores, rover telemetry, and negotiation events.</p>
+            <div class="rp-export-btns">
+                <button class="rp-export-btn" onclick="downloadMissionReport()">&#8595; FULL REPORT (JSON)</button>
+                <button class="rp-export-btn" onclick="exportScoreCSV()">&#8595; SCORES (CSV)</button>
+                <button class="rp-export-btn" onclick="exportNegotiationLog()">&#8595; NEGOTIATION LOG</button>
+            </div>
+            <div class="rp-section-title" style="margin-top:12px">WHAT CAN YOU DO WITH THIS?</div>
+            <ul class="rp-use-cases">
+                <li><b>Benchmark AI negotiation</b> &mdash; Compare Nemotron scores across scenarios/parameter configs</li>
+                <li><b>Train reward models</b> &mdash; Use audit scores as labelled training data for RLHF</li>
+                <li><b>Publish results</b> &mdash; Timestamped CSV data ready for statistical analysis</li>
+                <li><b>Reproduce experiments</b> &mdash; JSON includes full config for exact reproduction</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- ============ WALKTHROUGH OVERLAY ============ -->
+    <div id="tour-overlay" style="display:none">
+        <div id="tour-backdrop"></div>
+        <div id="tour-spotlight"></div>
+        <div id="tour-card">
+            <button class="tour-close" onclick="endTour()">&times;</button>
+            <div class="tour-step-indicator" id="tour-step-indicator"></div>
+            <div class="tour-title" id="tour-title"></div>
+            <div class="tour-body" id="tour-body"></div>
+            <div class="tour-nav">
+                <button class="tour-btn tour-skip" onclick="endTour()">SKIP TOUR</button>
+                <div class="tour-nav-right">
+                    <button class="tour-btn tour-prev" id="tour-prev" onclick="tourPrev()">&#8592; BACK</button>
+                    <button class="tour-btn tour-next" id="tour-next" onclick="tourNext()">NEXT &#8594;</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ NARRATOR INDICATOR ============ -->
+    <div id="narrator-indicator">
+        <div class="narrator-wave"><span></span><span></span><span></span><span></span><span></span></div>
+        <span>NARRATOR</span>
+    </div>
+
+    <!-- ============ THREE.JS ============ -->
+    <div id="canvas-container"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>

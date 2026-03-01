@@ -1,0 +1,33 @@
+# Project Regolith Configuration
+# Autonomous Lunar Swarm Coordination
+
+simulation:
+  crater:
+    diameter_m: 500
+    depth_m: 80
+    grid_resolution: 256
+  physics:
+    gravity_lunar: 1.625  # m/s^2
+    tick_rate_hz: 30
+    shadow_speed: 0.5     # meters per second
+    shadow_battery_drain_multiplier: 5.0
+  rovers:
+    count: 3
+    max_battery: 100.0
+    normal_drain_rate: 0.05   # per second
+    max_speed: 2.0            # m/s
+
+agents:
+  tick_interval_s: 25.0
+  model: "claude-haiku-4-5-20251001"
+  max_tokens: 512
+
+nemotron:
+  endpoint: "https://integrate.api.nvidia.com/v1/chat/completions"
+  model: "nvidia/nemotron-3-nano-30b-a3b"
+  audit_on_cnp_round: true
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  telemetry_broadcast_hz: 10
